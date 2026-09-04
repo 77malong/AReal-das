@@ -178,6 +178,7 @@ ______________________________________________________________________
 | `qwen2_5_0_5b`          | 支持   | 支持     | Dense                         |
 | `qwen3_1_7b`            | 支持   | 支持     | Dense                         |
 | `qwen3_8b`              | 支持   | 支持     | Dense，推荐作为 FSDP 验证模型 |
+| `qwen3_vl_4b`           | 支持   | 不提供   | 多模态 Geometry3K            |
 | `qwen3_30b_a3b_4layers` | 不提供 | 支持     | MoE，使用 Megatron            |
 | `glm5_4layers`          | 不提供 | 支持     | MoE/MLA/DSA，使用 Megatron    |
 
