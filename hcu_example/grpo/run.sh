@@ -30,15 +30,15 @@ Single-node Ray + training:
 
 Multi-node Ray lifecycle (run on each physical node):
   # head node
-  bash run.sh --ray-head --model=qwen3_30b_a3b_4layers --backend=fsdp \
+  bash run.sh --ray-head --model=qwen3_30b_a3b_4layers --backend=megatron \
     --ray-address=<head-node-ip>:6379
 
   # worker node
-  bash run.sh --ray-worker --model=qwen3_30b_a3b_4layers --backend=fsdp \
+  bash run.sh --ray-worker --model=qwen3_30b_a3b_4layers --backend=megatron \
     --ray-address=<head-node-ip>:6379 --worker-ip=<worker-node-ip>
 
   # then launch training from the head node
-  bash run.sh --model=qwen3_30b_a3b_4layers --backend=fsdp \
+  bash run.sh --model=qwen3_30b_a3b_4layers --backend=megatron \
     --ray-address=<head-node-ip>:6379
 
 Options:
