@@ -127,29 +127,46 @@ ______________________________________________________________________
 
 ## 5. 模型脚本可覆盖的常用训练变量
 
-每个 `run_<model>_<backend>_sglang.sh` 都提供默认参数，并允许通过环境变量覆盖一部分配置。不同模型会有额外变量，但日常最常用的是下面这些。
+每个 `run_<model>_<backend>_sglang.sh` 都提供模型专属默认参数，并允许通过环境变量覆盖其中一部分配置。以下 SGLang 变量并非所有
+launcher 都支持，具体适用范围见表中说明。
 
-| 变量                                          | 说明                                     |
-| --------------------------------------------- | ---------------------------------------- |
-| `MODEL_PATH`                                  | 模型目录                                 |
-| `TOKENIZER_PATH`                              | tokenizer 目录，通常与模型目录相同       |
-| `N_NODES`                                     | 训练期望的 Ray 节点数                    |
-| `N_GPUS_PER_NODE`                             | 每节点注册的 HCU 数                      |
-| `ACTOR_BACKEND`                               | Actor 并行拓扑                           |
-| `ROLLOUT_BACKEND`                             | SGLang rollout 并行拓扑                  |
-| `TRAIN_BATCH_SIZE`                            | train dataloader batch                   |
-| `VALID_BATCH_SIZE`                            | validation batch                         |
-| `N_SAMPLES`                                   | 每个 prompt 的 rollout 数量              |
-| `MAX_NEW_TOKENS`                              | rollout 最大生成 token 数                |
-| `TOTAL_TRAIN_STEPS`                           | 总训练 step 数                           |
-| `ACTOR_LR`                                    | Actor learning rate                      |
-| `ACTOR_MAX_TOKENS_PER_MB` / `ACTOR_MB_TOKENS` | Actor micro-batch token 容量             |
-| `SGLANG_MEM_FRACTION_STATIC`                  | SGLang static memory fraction            |
-| `SGLANG_CONTEXT_LENGTH`                       | SGLang context length                    |
-| `SGLANG_CHUNKED_PREFILL_SIZE`                 | chunked prefill 大小                     |
-| `SGLANG_PAGE_SIZE`                            | KV cache page size                       |
-| `SGLANG_ATTENTION_BACKEND`                    | SGLang attention backend                 |
-| `CLEAN_BEFORE_TRAIN`                          | 训练前是否清理本节点旧 AReaL/SGLang 进程 |
+| 变量                                          | 说明                                                                      |
+| --------------------------------------------- | ------------------------------------------------------------------------- |
+| `MODEL_PATH`                                  | 模型目录                                                                  |
+| `TOKENIZER_PATH`                              | tokenizer 目录，通常与模型目录相同                                        |
+| `N_NODES`                                     | 训练期望的 Ray 节点数                                                     |
+| `N_GPUS_PER_NODE`                             | 每节点注册的 HCU 数                                                       |
+| `ACTOR_BACKEND`                               | Actor 并行拓扑                                                            |
+| `ROLLOUT_BACKEND`                             | SGLang rollout 并行拓扑                                                   |
+| `TRAIN_BATCH_SIZE`                            | train dataloader batch                                                    |
+| `VALID_BATCH_SIZE`                            | validation batch                                                          |
+| `N_SAMPLES`                                   | 每个 prompt 的 rollout 数量                                               |
+| `MAX_NEW_TOKENS`                              | rollout 最大生成 token 数                                                 |
+| `TOTAL_TRAIN_STEPS`                           | 总训练 step 数                                                            |
+| `ACTOR_LR`                                    | Actor learning rate                                                       |
+| `ACTOR_MAX_TOKENS_PER_MB` / `ACTOR_MB_TOKENS` | Actor micro-batch token 容量                                              |
+| `SGLANG_MEM_FRACTION_STATIC`                  | SGLang static memory fraction（所有当前 launcher）                        |
+| `SGLANG_CONTEXT_LENGTH`                       | SGLang context length（Qwen3-VL、Qwen3-30B、GLM-5；其他 launcher 不读取） |
+| `SGLANG_CHUNKED_PREFILL_SIZE`                 | chunked prefill 大小（所有当前 launcher）                                 |
+| `SGLANG_PAGE_SIZE`                            | KV cache page size（除 Qwen2.5 FSDP/Megatron 外）                         |
+| `SGLANG_ATTENTION_BACKEND`                    | SGLang attention backend（除 GLM-5 Megatron 外）                          |
+| `CLEAN_BEFORE_TRAIN`                          | 训练前是否清理本节点旧 AReaL/SGLang 进程                                  |
+
+### SGLang override 适用范围
+
+SGLang 覆盖变量由各模型 launcher 独立传递，不保证对所有模型/backend 生效。
+
+- `SGLANG_MEM_FRACTION_STATIC` 和 `SGLANG_CHUNKED_PREFILL_SIZE`：当前所有 launcher
+  都会读取；Qwen2.5 launcher 的 chunked prefill 默认值为 `-1`。
+- `SGLANG_CONTEXT_LENGTH`：当前只由 Qwen3-VL FSDP、Qwen3-30B-A3B Megatron 和 GLM-5 Megatron
+  launcher 传递。
+- `SGLANG_PAGE_SIZE`：Qwen2.5 FSDP 和 Qwen2.5 Megatron launcher 有意不传递；其他当前 launcher
+  会传递该参数。
+- `SGLANG_ATTENTION_BACKEND`：除 GLM-5 Megatron 外，其他当前 launcher 会传递该参数。GLM-5 使用固定的
+  MLA/FlashMLA 配置，并将 `sglang.attention_backend` 设置为 `null`。
+
+如果某个变量不在对应 launcher 的配置数组中，导出该变量不会产生效果。需要修改不支持的 SGLang 参数时，应先检查对应的
+`run_<model>_<backend>_sglang.sh`。
 
 例如临时覆盖一个模型的训练步数和模型路径，可以直接：
 
