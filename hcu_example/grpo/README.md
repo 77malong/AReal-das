@@ -51,14 +51,16 @@ TRAINER_CONFIG
 
 ## 新增模型必须做的事情
 
-1. 创建 `run_<model>_<train_backend>_<rollout_backend>.sh`。
+1. 创建 `run_<model>_<backend>_sglang.sh`，其中 `<backend>` 为 `fsdp` 或 `megatron`。
 1. 对照 AReaL v1.0.4 `cli_args.py` 和对应官方 YAML，确认每个 Hydra key 存在。
 1. 选择正确的 `AREAL_ENV_PROFILE`。
 1. 设计合理的 Actor/Rollout TP/DP/PP/EP，而不是机械复制其他模型。
-1. 在 `run.sh` 的 `SUPPORTED_MODELS` 中注册名字。
-1. 在 `run.sh` 的 `case` 中注册 `MODEL_SCRIPT / PROFILE`。
+1. 不要修改 `run.sh` 注册模型；`run.sh` 会根据 launcher 文件名自动发现模型和 backend。
 1. 更新本 README 的模型表。
-1. 执行 `bash -n` 和 `bash run.sh --list`。
+1. 执行 `bash -n run_<model>_<backend>_sglang.sh`，并使用
+   `bash run.sh --list`、`bash run.sh --model=<model> --backends` 和
+   `bash run.sh --model=<model> --backend=<backend> --info` 检查发现结果。
+1. 对 FSDP launcher 额外执行 `bash run.sh --check-fsdp`。
 1. 首次只做 10~20 step smoke test。
 1. 如果环境/profile/source 路径变化，重启 Ray 后再测试。
 
