@@ -39,7 +39,7 @@ MEGATRON_BRIDGE_TYPE="${MEGATRON_BRIDGE_TYPE:-mbridge}"
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-gsm8k-qwen2-5-0-5b-hcu}"
 TRIAL_NAME="${TRIAL_NAME:-grpo-megatron-tp2-sglang-tp2}"
 TIMESTAMP="${TIMESTAMP:-$(date '+%Y%m%d-%H%M%S')}"
-LOG_DIR="${LOG_DIR:-${AREAL_RUNS_ROOT}/${EXPERIMENT_NAME}-${TRIAL_NAME}-${TIMESTAMP}}"
+LOG_DIR="${LOG_DIR:-${LOG_ROOT}/${EXPERIMENT_NAME}-${TRIAL_NAME}-${TIMESTAMP}}"
 LOG_FILE="${LOG_FILE:-${LOG_DIR}/train.log}"
 
 # Keep the first adaptation run small. Override from the shell when needed.
