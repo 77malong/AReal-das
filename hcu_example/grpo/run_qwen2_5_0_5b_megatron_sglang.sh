@@ -50,6 +50,8 @@ MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-1024}"
 TOTAL_TRAIN_EPOCHS="${TOTAL_TRAIN_EPOCHS:-1}"
 # Empty means follow total_train_epochs. Example smoke run: TOTAL_TRAIN_STEPS=20.
 TOTAL_TRAIN_STEPS="${TOTAL_TRAIN_STEPS:-10}"
+ACTOR_LR="${ACTOR_LR:-1.7e-5}"
+ACTOR_MAX_TOKENS_PER_MB="${ACTOR_MAX_TOKENS_PER_MB:-10240}"
 
 # HCU-safe SGLang settings. All keys below exist in upstream AReaL v1.0.4.
 SGLANG_MEM_FRACTION_STATIC="${SGLANG_MEM_FRACTION_STATIC:-0.4}"
@@ -84,6 +86,8 @@ ACTOR_CONFIG=(
   "actor.backend=${ACTOR_BACKEND}"
   "actor.path=${MODEL_PATH}"
   "actor.weight_update_mode=${WEIGHT_UPDATE_MODE}"
+  "actor.optimizer.lr=${ACTOR_LR}"
+  "actor.mb_spec.max_tokens_per_mb=${ACTOR_MAX_TOKENS_PER_MB}"
   "++actor.megatron.bridge_type=${MEGATRON_BRIDGE_TYPE}"
   "++actor.attn_impl=${ACTOR_ATTN_IMPL}"
 )
