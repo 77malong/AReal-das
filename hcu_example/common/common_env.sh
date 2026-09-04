@@ -542,7 +542,6 @@ expected_selected_env = {
 
 errors = []
 for r in results:
-    print("Ray worker env:", r)
     exe = pathlib.Path(r["python"]).absolute()
     paths = []
     for x in r["sys_path"]:
@@ -581,6 +580,8 @@ for r in results:
 
 if errors:
     print("[ERROR] Ray worker Python environment mismatch:")
+    for r in results:
+        print("Ray worker env:", r)
     for e in errors:
         print("  -", e)
     print("Ray was started from a different environment. Stop and restart Ray on every node with the same AREAL_ENV_PROFILE and this examples package.")
@@ -589,6 +590,12 @@ if errors:
     print("  AREAL_ENV_PROFILE=%s NUM_GPUS=8 NUM_CPUS=128 bash scripts/start_ray.sh <HEAD_IP>" % os.environ.get("EXPECTED_AREAL_ENV_PROFILE", "qwen"))
     raise SystemExit(3)
 
+for r in results:
+    print(
+        f"[OK] Ray worker env: node={r['requested_node']} "
+        f"host={r['host']} python={r['python']} "
+        f"sglang={r['sglang_spec']}"
+    )
 print(f"[OK] Ray worker Python environment validated on {len(results)} node(s).")
 PY
 }
