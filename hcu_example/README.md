@@ -34,7 +34,6 @@ ______________________________________________________________________
         ├── run_qwen3_vl_4b_fsdp_sglang.sh
         ├── run_qwen3_8b_megatron_sglang.sh
         ├── run_qwen3_30b_a3b_4layers_megatron_sglang.sh
-        ├── run_qwen3_5_2b_megatron_sglang.sh
         └── run_glm5_4layers_megatron_sglang.sh
 ```
 
