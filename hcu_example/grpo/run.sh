@@ -640,8 +640,13 @@ if [[ "${RESTART_RAY}" == 1 ]]; then
   export RAY_ADDRESS="${RAY_HEAD_IP}:${RAY_PORT}"
   echo "===== Restarting single-node Ray for ${MODEL}/${BACKEND} ====="
   echo "profile=${AREAL_ENV_PROFILE} address=${RAY_ADDRESS} gpus=${REQUESTED_GPUS_PER_NODE}"
-  STOP_EXISTING_RAY=1 NUM_GPUS="${REQUESTED_GPUS_PER_NODE}" \
-    bash "${EXAMPLE_ROOT}/scripts/start_ray.sh" "${RAY_HEAD_IP}"
+  if [[ "${DO_DRY_RUN}" == 1 ]]; then
+    STOP_EXISTING_RAY=1 NUM_GPUS="${REQUESTED_GPUS_PER_NODE}" \
+      bash "${EXAMPLE_ROOT}/scripts/start_ray.sh" "${RAY_HEAD_IP}"
+  else
+    VALIDATE_RAY_WORKER_ENV=0 STOP_EXISTING_RAY=1 NUM_GPUS="${REQUESTED_GPUS_PER_NODE}" \
+      bash "${EXAMPLE_ROOT}/scripts/start_ray.sh" "${RAY_HEAD_IP}"
+  fi
 fi
 
 if [[ "${DO_DRY_RUN}" == 1 ]]; then
