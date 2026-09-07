@@ -43,7 +43,7 @@ Multi-node Ray lifecycle (run on each physical node):
 Options:
   --model=<name>          Model family, e.g. qwen3, or a legacy model key.
                           Legacy <model>_<backend>_sglang names are also accepted.
-  --variant=<name>        dense, moe, vl, or vl_moe.
+  --variant=<name>        Required for training: dense, moe, vl, or vl_moe.
   --backend=<name>        Actor backend: fsdp or megatron.
   --rollout=<name>        Rollout backend: sglang or vllm.
   --list                  List family/variant/backend/rollout launchers.
@@ -236,53 +236,11 @@ extract_profile() {
   echo "${p}"
 }
 
-config_has() {
-  local pattern="$1" config="$2"
-  grep -Eiq "${pattern}" <<<"${config}"
-}
-
-detect_model_config() {
-  DETECTED_FAMILY=""
-  DETECTED_VARIANT=""
-  [[ -n "${MODEL_PATH:-}" && -f "${MODEL_PATH}/config.json" ]] || return 0
-
-  local config path_token
-  config="$(<"${MODEL_PATH}/config.json")"
-  path_token="${MODEL_PATH,,}"
-  config="${config,,}"
-
-  if [[ "${path_token} ${config}" == *qwen3_5* || "${path_token} ${config}" == *qwen3.5* ]]; then
-    DETECTED_FAMILY=qwen3_5
-  elif [[ "${path_token} ${config}" == *qwen3* ]]; then
-    DETECTED_FAMILY=qwen3
-  elif [[ "${path_token}" == *qwen2.5* || "${path_token}" == *qwen2_5* ]]; then
-    DETECTED_FAMILY=qwen2_5
-  elif [[ "${path_token} ${config}" == *glm5* ]]; then
-    DETECTED_FAMILY=glm5
-  elif [[ "${config}" =~ \"model_type\"[[:space:]]*:[[:space:]]*\"qwen2\" ]]; then
-    DETECTED_FAMILY=qwen2
-  fi
-
-  local has_vision=0 has_moe=0
-  if config_has 'vision_config|qwen[23].*_vl|vision' "${config}"; then has_vision=1; fi
-  if config_has '"num_experts"[[:space:]]*:[[:space:]]*[2-9][0-9]*|"num_local_experts"[[:space:]]*:[[:space:]]*[2-9][0-9]*|qwen[35].*_moe|glm5' "${config}"; then has_moe=1; fi
-  if (( has_vision && has_moe )); then
-    DETECTED_VARIANT=vl_moe
-  elif (( has_vision )); then
-    DETECTED_VARIANT=vl
-  elif (( has_moe )); then
-    DETECTED_VARIANT=moe
-  else
-    DETECTED_VARIANT=dense
-  fi
-}
-
 collect_launcher_matches() {
   MATCHED_FILES=()
   local file family variant backend rollout requested_family requested_id
   requested_family="$(normalize_family "${MODEL:-}")"
   requested_id="$(canonical_launcher_id "${MODEL:-}")"
-  detect_model_config
   shopt -s nullglob
   for file in "${SCRIPT_DIR}"/run_*_fsdp_*.sh "${SCRIPT_DIR}"/run_*_megatron_*.sh; do
     family="$(launcher_family "${file}")"
@@ -294,8 +252,6 @@ collect_launcher_matches() {
     [[ -z "${VARIANT_ARG:-}" || "${VARIANT_ARG}" == "${variant}" ]] || continue
     [[ -z "${BACKEND}" || "${BACKEND}" == "${backend}" ]] || continue
     [[ -z "${ROLLOUT_ARG:-}" || "${ROLLOUT_ARG}" == "${rollout}" ]] || continue
-    [[ -z "${DETECTED_FAMILY}" || "${DETECTED_FAMILY}" == "${family}" ]] || continue
-    [[ -z "${DETECTED_VARIANT}" || "${DETECTED_VARIANT}" == "${variant}" ]] || continue
     MATCHED_FILES+=("${file}")
   done
   shopt -u nullglob
@@ -311,7 +267,7 @@ resolve_launcher() {
   if ((${#MATCHED_FILES[@]} > 1)); then
     echo "[ERROR] Launcher selection is ambiguous:" >&2
     printf '        %s\n' "${MATCHED_FILES[@]##*/}" >&2
-    echo "        Add --variant, --backend, --rollout, or --model-path." >&2
+    echo "        Add --variant, --backend, or --rollout." >&2
     return 2
   fi
   SELECTED_SCRIPT="${MATCHED_FILES[0]}"
@@ -618,6 +574,22 @@ if [[ "${DO_CHECK_FSDP}" == 1 ]]; then
   exit 0
 fi
 
+# Validate selector values before resolution so a typo reports the bad value
+# instead of a generic "no launcher matches".
+if [[ -n "${VARIANT_ARG}" && "${VARIANT_ARG}" != dense && "${VARIANT_ARG}" != moe &&
+      "${VARIANT_ARG}" != vl && "${VARIANT_ARG}" != vl_moe ]]; then
+  echo "[ERROR] Unsupported variant: ${VARIANT_ARG}. Use dense, moe, vl, or vl_moe." >&2
+  exit 2
+fi
+if [[ -n "${BACKEND}" && "${BACKEND}" != fsdp && "${BACKEND}" != megatron ]]; then
+  echo "[ERROR] Unsupported actor backend: ${BACKEND}. Use fsdp or megatron." >&2
+  exit 2
+fi
+if [[ -n "${ROLLOUT_ARG}" && "${ROLLOUT_ARG}" != sglang && "${ROLLOUT_ARG}" != vllm ]]; then
+  echo "[ERROR] Unsupported rollout backend: ${ROLLOUT_ARG}. Use sglang or vllm." >&2
+  exit 2
+fi
+
 if [[ "${DO_BACKENDS}" == 1 ]]; then
   [[ -n "${MODEL}" ]] || { echo "[ERROR] --backends requires --model=<family-or-key>." >&2; exit 2; }
   show_backends "${MODEL}"
@@ -630,17 +602,20 @@ if [[ "${DO_INFO}" == 1 ]]; then
   exit $?
 fi
 
-# Resolve one launcher before training or model-aware Ray operations.  A family
-# with multiple actor/rollout backends must be narrowed with --variant,
-# --backend, --rollout, or a model path whose config identifies the variant.
+# Resolve exactly one launcher before training or model-aware Ray operations.
+# Selection is explicit only: family, variant, actor backend and rollout backend
+# all come from the command line or a legacy model key.  Model weights are never
+# inspected, so pointing a launcher at the wrong checkpoint fails at load time
+# rather than being silently rerouted here.
 if [[ -n "${MODEL}" ]]; then
+  [[ -n "${VARIANT_ARG}" ]] || {
+    echo "[ERROR] --variant is required. Use dense, moe, vl, or vl_moe." >&2
+    echo "        Run: bash run.sh --list" >&2
+    exit 2
+  }
   resolve_launcher || exit $?
 fi
 
-if [[ -n "${BACKEND}" && "${BACKEND}" != fsdp && "${BACKEND}" != megatron ]]; then
-  echo "[ERROR] Unsupported actor backend: ${BACKEND}. Use fsdp or megatron." >&2
-  exit 2
-fi
 
 if [[ -z "${PROFILE:-}" && -n "${PROFILE_ARG}" ]]; then
   PROFILE="${PROFILE_ARG}"
