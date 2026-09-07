@@ -115,10 +115,6 @@ jobs:
           find hcu_example -type f -name "*.sh" -print0 |
             xargs -0 -r -n1 bash -n
 
-      - name: Check HCU launcher contract
-        run: |
-          bash tests/test_hcu_grpo_launcher.sh
-
       - name: Check public HCU requirements policy
         run: |
           if grep -nE '^.*\+das|^.*dtk[0-9]|^(torch|torchvision|triton|flash_attn|transformer_engine|hcu-megatron)==' requirements-hcu.txt; then

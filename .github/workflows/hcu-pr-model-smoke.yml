@@ -204,10 +204,8 @@ jobs:
           export GRPO_CONFIG=ci-runtime/model-smoke-grpo.yaml
           cd "${AREAL_HOME}/hcu_example/grpo"
           bash run.sh \
-            --model=qwen3 \
-            --variant=dense \
+            --model=qwen3_8b \
             --backend=fsdp \
-            --rollout=sglang \
             --model-path="${MODEL_PATH}" \
             --tokenizer-path="${TOKENIZER_PATH}" \
             --gpus-per-node=8 \
