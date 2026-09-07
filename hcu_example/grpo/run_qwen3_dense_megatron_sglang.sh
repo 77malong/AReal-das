@@ -39,18 +39,8 @@ SGLANG_PAGE_SIZE="${SGLANG_PAGE_SIZE:-64}"
 SGLANG_ATTENTION_BACKEND="${SGLANG_ATTENTION_BACKEND:-fa3}"
 ACTOR_ATTN_IMPL="${ACTOR_ATTN_IMPL:-sdpa}"
 
-QWEN3_DENSE_SMALL=0
-SGLANG_DISABLE_CUSTOM_ALL_REDUCE=""
-ROLLOUT_SETUP_TIMEOUT=""
-if [[ -f "${MODEL_PATH}/config.json" ]] &&
-   grep -Eq '"hidden_size"[[:space:]]*:[[:space:]]*2048' "${MODEL_PATH}/config.json" &&
-   grep -Eq '"num_hidden_layers"[[:space:]]*:[[:space:]]*28' "${MODEL_PATH}/config.json"; then
-  QWEN3_DENSE_SMALL=1
-fi
-if (( QWEN3_DENSE_SMALL == 0 )); then
-  SGLANG_DISABLE_CUSTOM_ALL_REDUCE="${SGLANG_DISABLE_CUSTOM_ALL_REDUCE:-True}"
-  ROLLOUT_SETUP_TIMEOUT="${ROLLOUT_SETUP_TIMEOUT:-900}"
-fi
+SGLANG_DISABLE_CUSTOM_ALL_REDUCE="${SGLANG_DISABLE_CUSTOM_ALL_REDUCE:-True}"
+ROLLOUT_SETUP_TIMEOUT="${ROLLOUT_SETUP_TIMEOUT:-900}"
 
 CLUSTER_CONFIG=(
   "scheduler.type=ray" "experiment_name=${EXPERIMENT_NAME}" "trial_name=${TRIAL_NAME}"
@@ -69,12 +59,10 @@ ACTOR_CONFIG=(
 )
 ROLLOUT_CONFIG=(
   "rollout.backend=${ROLLOUT_BACKEND}"
+  "+rollout.setup_timeout=${ROLLOUT_SETUP_TIMEOUT}"
   "gconfig.n_samples=${N_SAMPLES}"
   "gconfig.max_new_tokens=${MAX_NEW_TOKENS}"
 )
-if (( QWEN3_DENSE_SMALL == 0 )); then
-  ROLLOUT_CONFIG+=("+rollout.setup_timeout=${ROLLOUT_SETUP_TIMEOUT}")
-fi
 SGLANG_CONFIG=(
   "sglang.model_path=${MODEL_PATH}"
   "tokenizer_path=${TOKENIZER_PATH}"
@@ -93,20 +81,6 @@ SGLANG_CONFIG=(
 
   "++sglang.attention_backend=${SGLANG_ATTENTION_BACKEND}"
 )
-if (( QWEN3_DENSE_SMALL == 1 )); then
-  SGLANG_CONFIG=(
-    "sglang.model_path=${MODEL_PATH}"
-    "tokenizer_path=${TOKENIZER_PATH}"
-    "sglang.mem_fraction_static=${SGLANG_MEM_FRACTION_STATIC}"
-    "++sglang.chunked_prefill_size=${SGLANG_CHUNKED_PREFILL_SIZE}"
-    "++sglang.page_size=${SGLANG_PAGE_SIZE}"
-    "++sglang.disable_radix_cache=True"
-    "++sglang.disable_cuda_graph=True"
-    "++sglang.disable_cuda_graph_padding=True"
-    "++sglang.disable_overlap_schedule=True"
-    "++sglang.attention_backend=${SGLANG_ATTENTION_BACKEND}"
-  )
-fi
 TRAINER_CONFIG=("total_train_epochs=${TOTAL_TRAIN_EPOCHS}")
 if [[ -n "${TOTAL_TRAIN_STEPS}" ]]; then
   TRAINER_CONFIG+=("++total_train_steps=${TOTAL_TRAIN_STEPS}")
