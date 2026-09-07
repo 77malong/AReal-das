@@ -26,18 +26,16 @@ ______________________________________________________________________
         ├── README.md
         ├── common.sh
         ├── run.sh
-        ├── run_qwen2_5_0_5b_fsdp_sglang.sh
-        ├── run_qwen2_5_0_5b_megatron_sglang.sh
-        ├── run_qwen3_1_7b_fsdp_sglang.sh
-        ├── run_qwen3_1_7b_megatron_sglang.sh
-        ├── run_qwen3_8b_fsdp_sglang.sh
-        ├── run_qwen3_vl_4b_fsdp_sglang.sh
-        ├── run_qwen3_8b_megatron_sglang.sh
-        ├── run_qwen3_30b_a3b_4layers_megatron_sglang.sh
-        └── run_glm5_4layers_megatron_sglang.sh
+        ├── run_qwen2_5_dense_fsdp_sglang.sh
+        ├── run_qwen2_5_dense_megatron_sglang.sh
+        ├── run_qwen3_dense_fsdp_sglang.sh
+        ├── run_qwen3_dense_megatron_sglang.sh
+        ├── run_qwen3_vl_fsdp_sglang.sh
+        ├── run_qwen3_moe_megatron_sglang.sh
+        └── run_glm5_1_moe_megatron_sglang.sh
 ```
 
-其中 `grpo/run.sh` 是推荐的统一入口，`run.sh` 负责发现训练脚本、启动/检查 Ray 并最终调用对应 launcher。
+`run.sh` 会扫描 `run_*_<actor_backend>_<rollout_backend>.sh`，从 launcher 文件名和顶部的 `HCU_LAUNCHER_*` 元数据自动发现 family、variant、Actor backend 和 Rollout backend；不需要维护独立注册文件。参数量不写入 launcher 文件名，具体模型由 `--model-path` 指定；未来 vLLM 使用同一命名槽位，例如 `run_qwen3_dense_fsdp_vllm.sh`。
 
 ______________________________________________________________________
 
@@ -78,8 +76,11 @@ export AREAL_HOME="<YOUR_AREAL_HOME>"
 export MEGATRON_HOME="<YOUR_MEGATRON_HOME>"
 export SGLANG_ROOT="<YOUR_SGLANG_ROOT>"
 bash run.sh \
-  --model=qwen3_8b \
+  --model=qwen3 \
+  --variant=dense \
   --backend=fsdp \
+  --rollout=sglang \
+  --rollout=sglang \
   --restart-ray
 ```
 
@@ -127,7 +128,7 @@ ______________________________________________________________________
 
 ## 5. 模型脚本可覆盖的常用训练变量
 
-每个 `run_<model>_<backend>_sglang.sh` 都提供模型专属默认参数，并允许通过环境变量覆盖其中一部分配置。以下 SGLang 变量并非所有 launcher 都支持，具体适用范围见表中说明。
+每个 `run_<family>_<variant>_<actor_backend>_<rollout_backend>.sh` 都提供模型专属默认参数，并允许通过环境变量覆盖其中一部分配置。以下 SGLang 变量并非所有 launcher 都支持，具体适用范围见表中说明。
 
 | 变量                                          | 说明                                     |
 | --------------------------------------------- | ---------------------------------------- |
@@ -160,7 +161,7 @@ SGLang 覆盖变量由各模型 launcher 独立传递，不保证对所有模型
 - `SGLANG_PAGE_SIZE`：Qwen2.5 FSDP 和 Qwen2.5 Megatron launcher 有意不传递；其他当前 launcher 会传递该参数。
 - `SGLANG_ATTENTION_BACKEND`：除 GLM-5 Megatron 外，其他当前 launcher 会传递该参数。GLM-5 使用固定的 MLA/FlashMLA 配置，并将 `sglang.attention_backend` 设置为 `null`。
 
-如果某个变量不在对应 launcher 的配置数组中，导出该变量不会产生效果。需要修改不支持的 SGLang 参数时，应先检查对应的 `run_<model>_<backend>_sglang.sh`。
+如果某个变量不在对应 launcher 的配置数组中，导出该变量不会产生效果。需要修改不支持的 SGLang 参数时，应先检查对应的 `run_<family>_<variant>_<actor_backend>_<rollout_backend>.sh`。
 
 例如临时覆盖一个模型的训练步数和模型路径，可以直接：
 
@@ -184,14 +185,16 @@ ______________________________________________________________________
 
 实际结果始终以 `bash run.sh --list` 为准，因为 `run.sh` 会扫描当前目录中真正存在的 launcher。
 
-| 模型 key                | FSDP2  | Megatron | 备注                          |
-| ----------------------- | ------ | -------- | ----------------------------- |
-| `qwen2_5_0_5b`          | 支持   | 支持     | Dense                         |
-| `qwen3_1_7b`            | 支持   | 支持     | Dense                         |
-| `qwen3_8b`              | 支持   | 支持     | Dense，推荐作为 FSDP 验证模型 |
-| `qwen3_vl_4b`           | 支持   | 不提供   | 多模态 Geometry3K            |
-| `qwen3_30b_a3b_4layers` | 不提供 | 支持     | MoE，使用 Megatron            |
-| `glm5_4layers`          | 不提供 | 支持     | MoE/MLA/DSA，使用 Megatron    |
+| Family     | Variant | Preset                | FSDP2 | Megatron | 备注                          |
+| ---------- | ------- | --------------------- | ----- | -------- | ----------------------------- |
+| `qwen2_5`  | dense   | `0_5b`                | 支持  | 支持     | Dense                         |
+| `qwen3`    | dense   | `1_7b`                | 支持  | 支持     | Dense                         |
+| `qwen3`    | dense   | `8b`                  | 支持  | 支持     | Dense，推荐作为 FSDP 验证模型 |
+| `qwen3`    | vl      | `4b`                  | 支持  | 不提供   | 多模态 Geometry3K             |
+| `qwen3`    | moe     | `30b_a3b_4layers`     | 不提供 | 支持   | MoE，使用 Megatron            |
+| `glm5_1`   | moe     | `4layers`             | 不提供 | 支持   | MoE/MLA/DSA                   |
+
+`--model` 表示模型 family，`--variant` 区分 `dense`、`moe`、`vl` 和未来的 `vl_moe`，`--backend` 选择 Actor 的 FSDP 或 Megatron，`--rollout` 选择 SGLang 或未来的 vLLM。参数量不属于 launcher identity，由 `--model-path` 和模型目录中的 `config.json` 决定。模型路径存在 `config.json` 时，`run.sh` 会做 Dense/MoE/VL 一致性检查；无法唯一确定时会报错并列出候选。旧的 `qwen3_8b`、`qwen3_8b_fsdp_sglang` 等 key 仍然兼容。
 
 对于 Qwen3-30B-A3B 和 GLM-5，后续如果重新引入 PyTorch-native MoE 训练方案，应单独评估模型架构、expert 权重布局、HCU
 kernel 和 SGLang 在线权重更新，不建议恢复之前的 FSDP launcher 后直接用于正式训练。
@@ -248,7 +251,8 @@ bash run.sh \
 
 ```bash
 bash run.sh \
-  --model=qwen3_8b \
+  --model=qwen3 \
+  --variant=dense \
   --backends
 ```
 
@@ -283,7 +287,7 @@ backend、节点数、每节点 GPU 数以及 batch 等默认值。修改模型 
 bash run.sh --check-fsdp
 ```
 
-该命令只审计当前仍存在的 `run_*_fsdp_sglang.sh`。 它会检查shell 语法、DP batch 条件和GPU budget。
+该命令只审计当前 `run_*_fsdp_*` launcher。它会检查 shell 语法、DP batch 条件和 GPU budget。
 
 ## 7.6 Dry run
 
@@ -348,8 +352,8 @@ ______________________________________________________________________
 source <VENV_PATH>/bin/activate
 cd <AREAL_HOME>/hcu_example/grpo
 
-bash run.sh --model=qwen3_8b --backends
-bash run.sh --model=qwen3_8b --backend=fsdp --info
+bash run.sh --model=qwen3 --variant=dense --backend=fsdp --rollout=sglang --backends
+bash run.sh --model=qwen3 --variant=dense --backend=fsdp --rollout=sglang --info
 ```
 
 如果模型不在 launcher 的默认目录，可以通过命令行覆盖。第一次运行建议先做一个短 smoke test，减少生成长度和训练步数，只验证
@@ -359,8 +363,10 @@ Ray、FSDP、SGLang、GRPO forward/backward 和在线权重更新主链路。
 TOTAL_TRAIN_STEPS=2 \
 MAX_NEW_TOKENS=128 \
 bash run.sh \
-  --model=qwen3_8b \
+  --model=qwen3 \
+  --variant=dense \
   --backend=fsdp \
+  --rollout=sglang \
   --model-path=<QWEN3_8B_MODEL_PATH> \
   --tokenizer-path=<QWEN3_8B_MODEL_PATH> \
   --restart-ray
@@ -376,8 +382,10 @@ launcher。
 TOTAL_TRAIN_STEPS=2 \
 MAX_NEW_TOKENS=128 \
 bash run.sh \
-  --model=qwen3_8b \
+  --model=qwen3 \
+  --variant=dense \
   --backend=fsdp \
+  --rollout=sglang \
   --model-path=<QWEN3_8B_MODEL_PATH> \
   --ray-address=<HEAD_IP>:<RAY_PORT>
 ```
@@ -397,7 +405,8 @@ ______________________________________________________________________
 
 ```bash
 bash run.sh \
-  --model=qwen3_8b \
+  --model=qwen3 \
+  --variant=dense \
   --backend=megatron \
   --model-path=<QWEN3_8B_MODEL_PATH> \
   --restart-ray
@@ -426,8 +435,7 @@ cd <AREAL_HOME>/hcu_example/grpo
 
 bash run.sh \
   --ray-head \
-  --model=qwen3_30b_a3b_4layers \
-  --backend=megatron \
+  --model=qwen3 --variant=moe --backend=megatron --rollout=sglang \
   --ray-address=<HEAD_IP>:<RAY_PORT>
 ```
 
@@ -443,8 +451,7 @@ cd <AREAL_HOME>/hcu_example/grpo
 
 bash run.sh \
   --ray-worker \
-  --model=qwen3_30b_a3b_4layers \
-  --backend=megatron \
+  --model=qwen3 --variant=moe --backend=megatron --rollout=sglang \
   --ray-address=<HEAD_IP>:<RAY_PORT> \
   --worker-ip=<WORKER_IP>
 ```
@@ -462,8 +469,7 @@ head、worker 命令必须分别在对应节点执行。
 ```bash
 bash run.sh \
   --ray-status \
-  --model=qwen3_30b_a3b_4layers \
-  --backend=megatron \
+  --model=qwen3 --variant=moe --backend=megatron --rollout=sglang \
   --ray-address=<HEAD_IP>:<RAY_PORT>
 ```
 
@@ -484,8 +490,7 @@ Ray 集群建立完成后，只在 head 节点启动一份 training driver：
 TOTAL_TRAIN_STEPS=2 \
 MAX_NEW_TOKENS=128 \
 bash run.sh \
-  --model=qwen3_30b_a3b_4layers \
-  --backend=megatron \
+  --model=qwen3 --variant=moe --backend=megatron --rollout=sglang \
   --model-path=<QWEN3_MOE_MODEL_PATH> \
   --tokenizer-path=<QWEN3_MOE_MODEL_PATH> \
   --ray-address=<HEAD_IP>:<RAY_PORT>
@@ -538,8 +543,8 @@ bash run.sh \
   --ray-address=<HEAD_IP>:<RAY_PORT>
 ```
 
-如果已经知道最终要跑哪个模型，更推荐使用 `--model=<MODEL_KEY>`，因为 `run.sh` 可以直接从模型 launcher 自动推导正确的环境
-profile 和资源默认值。
+如果已经知道最终要跑哪个模型，更推荐使用 `--model=<FAMILY> --variant=<VARIANT> --backend=<fsdp|megatron> --rollout=<sglang|vllm>`，因为 `run.sh` 可以直接从模型 launcher 自动推导正确的环境
+profile 和资源默认值。具体参数量由 `--model-path` 指向的模型配置决定。
 
 ______________________________________________________________________
 
