@@ -84,7 +84,7 @@ normalize_family() {
     qwen2) echo qwen2 ;;
     qwen3) echo qwen3 ;;
     qwen35|qwen3_5) echo qwen3_5 ;;
-    glm5|glm5_1) echo glm5_1 ;;
+    glm5|glm5_1) echo glm5 ;;
     *) echo "${value}" ;;
   esac
 }
@@ -100,7 +100,7 @@ canonical_launcher_id() {
     qwen3_1_7b|qwen3_8b) echo qwen3_dense ;;
     qwen3_vl_4b) echo qwen3_vl ;;
     qwen3_30b_a3b_4layers) echo qwen3_moe ;;
-    glm5_4layers|glm5_1_moe_4layers) echo glm5_1_moe ;;
+    glm5_4layers|glm5_1_moe_4layers|glm5_1_moe) echo glm5_moe ;;
     *) echo "${value}" ;;
   esac
 }
@@ -111,7 +111,8 @@ legacy_model_key() {
     qwen3_dense) echo qwen3 ;;
     qwen3_vl) echo qwen3_vl ;;
     qwen3_moe) echo qwen3_moe ;;
-    glm5_1_moe) echo glm5_1 ;;
+    qwen3_5_dense) echo qwen3_5 ;;
+    glm5_moe) echo glm5 ;;
     *) echo "$1" ;;
   esac
 }
@@ -182,7 +183,7 @@ launcher_family() {
       qwen2_5_*) value=qwen2_5 ;;
       qwen3_5_*) value=qwen3_5 ;;
       qwen3_vl_*|qwen3_moe_*|qwen3_*) value=qwen3 ;;
-      glm5_1_*|glm5_*) value=glm5_1 ;;
+      glm5_*) value=glm5 ;;
       qwen2_*) value=qwen2 ;;
       *) value="${model%%_*}" ;;
     esac
@@ -257,7 +258,7 @@ detect_model_config() {
   elif [[ "${path_token}" == *qwen2.5* || "${path_token}" == *qwen2_5* ]]; then
     DETECTED_FAMILY=qwen2_5
   elif [[ "${path_token} ${config}" == *glm5* ]]; then
-    DETECTED_FAMILY=glm5_1
+    DETECTED_FAMILY=glm5
   elif [[ "${config}" =~ \"model_type\"[[:space:]]*:[[:space:]]*\"qwen2\" ]]; then
     DETECTED_FAMILY=qwen2
   fi
