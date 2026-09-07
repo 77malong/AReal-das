@@ -19,13 +19,15 @@ run_qwen3_dense_fsdp_sglang.sh
 run_qwen3_dense_megatron_sglang.sh
 run_qwen3_vl_fsdp_sglang.sh
 run_qwen3_moe_megatron_sglang.sh
-run_glm5_1_moe_megatron_sglang.sh
+run_qwen3_5_dense_fsdp_sglang.sh
+run_qwen3_5_dense_megatron_sglang.sh
+run_glm5_moe_megatron_sglang.sh
 ```
 
 字段含义：
 
 ```text
-family         = qwen2_5 / qwen3 / qwen3_5 / glm5_1
+family         = qwen2_5 / qwen3 / qwen3_5 / glm5
 variant        = dense / moe / vl / vl_moe
 actor backend  = fsdp / megatron
 rollout        = sglang / vllm
@@ -49,7 +51,8 @@ run_qwen3_vl_fsdp_vllm.sh
 | `qwen3`   | dense   | FSDP DP4 / Megatron TP4 | SGLang TP4 | 1×8 HCU  | qwen        | Qwen3 Dense，不按参数量拆 launcher |
 | `qwen3`   | vl      | FSDP DP4                | SGLang TP4 | 1×8 HCU  | qwen        | Geometry3K 多模态                  |
 | `qwen3`   | moe     | Megatron TP/PP/EP       | SGLang TP8 | 2×8 HCU  | qwen        | MoE，独立拓扑                      |
-| `glm5_1`  | moe     | Megatron TP/EP          | SGLang TP8 | 2×8 HCU  | glm5        | MLA/DSA/custom                     |
+| `qwen3_5` | dense   | FSDP T8 / Megatron TP8  | SGLang TP8 | 1×8 HCU  | qwen35      | Qwen3.5 Dense，fa3+fp8             |
+| `glm5`    | moe     | Megatron TP/EP          | SGLang TP8 | 2×8 HCU  | glm5        | MLA/DSA/custom                     |
 
 同一个 Qwen3 Dense launcher 可以接收 Qwen3-1.7B 或 Qwen3-8B；具体权重由 `--model-path` 指定。模型目录的
 `config.json` 用于做 family、Dense/MoE/VL 一致性检查。
@@ -118,7 +121,7 @@ qwen3_1_7b             -> qwen3_dense_fsdp_sglang / megatron_sglang
 qwen3_8b               -> qwen3_dense_fsdp_sglang / megatron_sglang
 qwen3_vl_4b            -> qwen3_vl_fsdp_sglang
 qwen3_30b_a3b_4layers  -> qwen3_moe_megatron_sglang
-glm5_4layers           -> glm5_1_moe_megatron_sglang
+glm5_4layers           -> glm5_moe_megatron_sglang
 ```
 
 `--profile` 仍然表示 Ray/AReaL 运行环境
