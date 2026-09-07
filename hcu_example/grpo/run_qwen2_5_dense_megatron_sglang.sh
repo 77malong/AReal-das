@@ -3,6 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 set -Eeuo pipefail
 
+# Launcher metadata consumed by grpo/run.sh without sourcing this file.
+HCU_LAUNCHER_FAMILY=qwen2_5
+HCU_LAUNCHER_VARIANT=dense
+HCU_LAUNCHER_ACTOR_BACKEND=megatron
+HCU_LAUNCHER_ROLLOUT_BACKEND=sglang
+HCU_LAUNCHER_PROFILE=qwen
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 export AREAL_ENV_PROFILE="${AREAL_ENV_PROFILE:-qwen}"
 # shellcheck disable=SC1091
@@ -36,7 +42,7 @@ ROLLOUT_BACKEND="${ROLLOUT_BACKEND:-sglang:d1p1t2}"
 WEIGHT_UPDATE_MODE="${WEIGHT_UPDATE_MODE:-xccl}"
 MEGATRON_BRIDGE_TYPE="${MEGATRON_BRIDGE_TYPE:-mbridge}"
 
-EXPERIMENT_NAME="${EXPERIMENT_NAME:-gsm8k-qwen2-5-0-5b-hcu}"
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-gsm8k-qwen2-5-dense}"
 TRIAL_NAME="${TRIAL_NAME:-grpo-megatron-tp2-sglang-tp2}"
 TIMESTAMP="${TIMESTAMP:-$(date '+%Y%m%d-%H%M%S')}"
 LOG_DIR="${LOG_DIR:-${LOG_ROOT}/${EXPERIMENT_NAME}-${TRIAL_NAME}-${TIMESTAMP}}"

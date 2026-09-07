@@ -3,6 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 set -Eeuo pipefail
 
+# Launcher metadata consumed by grpo/run.sh without sourcing this file.
+HCU_LAUNCHER_FAMILY=glm5_1
+HCU_LAUNCHER_VARIANT=moe
+HCU_LAUNCHER_ACTOR_BACKEND=megatron
+HCU_LAUNCHER_ROLLOUT_BACKEND=sglang
+HCU_LAUNCHER_PROFILE=glm5
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 export AREAL_ENV_PROFILE="${AREAL_ENV_PROFILE:-glm5}"

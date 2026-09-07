@@ -2,6 +2,12 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
 set -Eeuo pipefail
+# Launcher metadata consumed by grpo/run.sh without sourcing this file.
+HCU_LAUNCHER_FAMILY=qwen3
+HCU_LAUNCHER_VARIANT=dense
+HCU_LAUNCHER_ACTOR_BACKEND=megatron
+HCU_LAUNCHER_ROLLOUT_BACKEND=sglang
+HCU_LAUNCHER_PROFILE=qwen
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 export AREAL_ENV_PROFILE="${AREAL_ENV_PROFILE:-qwen}"
 # shellcheck disable=SC1091
@@ -14,7 +20,7 @@ N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-8}"
 ACTOR_BACKEND="${ACTOR_BACKEND:-megatron:d1p1t4}"
 ROLLOUT_BACKEND="${ROLLOUT_BACKEND:-sglang:d1p1t4}"
 WEIGHT_UPDATE_MODE="${WEIGHT_UPDATE_MODE:-xccl}"
-EXPERIMENT_NAME="${EXPERIMENT_NAME:-gsm8k-qwen3-1.7b-hcu}"
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-gsm8k-qwen3-dense}"
 TRIAL_NAME="${TRIAL_NAME:-grpo-megatron-tp4-sglang-tp4-fa3}"
 TIMESTAMP="${TIMESTAMP:-$(date '+%Y%m%d-%H%M%S')}"
 LOG_DIR="${LOG_DIR:-${LOG_ROOT}/${EXPERIMENT_NAME}-${TRIAL_NAME}-${TIMESTAMP}}"
@@ -33,6 +39,19 @@ SGLANG_PAGE_SIZE="${SGLANG_PAGE_SIZE:-64}"
 SGLANG_ATTENTION_BACKEND="${SGLANG_ATTENTION_BACKEND:-fa3}"
 ACTOR_ATTN_IMPL="${ACTOR_ATTN_IMPL:-sdpa}"
 
+QWEN3_DENSE_SMALL=0
+SGLANG_DISABLE_CUSTOM_ALL_REDUCE=""
+ROLLOUT_SETUP_TIMEOUT=""
+if [[ -f "${MODEL_PATH}/config.json" ]] &&
+   grep -Eq '"hidden_size"[[:space:]]*:[[:space:]]*2048' "${MODEL_PATH}/config.json" &&
+   grep -Eq '"num_hidden_layers"[[:space:]]*:[[:space:]]*28' "${MODEL_PATH}/config.json"; then
+  QWEN3_DENSE_SMALL=1
+fi
+if (( QWEN3_DENSE_SMALL == 0 )); then
+  SGLANG_DISABLE_CUSTOM_ALL_REDUCE="${SGLANG_DISABLE_CUSTOM_ALL_REDUCE:-True}"
+  ROLLOUT_SETUP_TIMEOUT="${ROLLOUT_SETUP_TIMEOUT:-900}"
+fi
+
 CLUSTER_CONFIG=(
   "scheduler.type=ray" "experiment_name=${EXPERIMENT_NAME}" "trial_name=${TRIAL_NAME}"
   "cluster.n_nodes=${N_NODES}" "cluster.n_gpus_per_node=${N_GPUS_PER_NODE}"
@@ -49,17 +68,45 @@ ACTOR_CONFIG=(
   "++actor.attn_impl=${ACTOR_ATTN_IMPL}"
 )
 ROLLOUT_CONFIG=(
-  "rollout.backend=${ROLLOUT_BACKEND}" "gconfig.n_samples=${N_SAMPLES}"
+  "rollout.backend=${ROLLOUT_BACKEND}"
+  "gconfig.n_samples=${N_SAMPLES}"
   "gconfig.max_new_tokens=${MAX_NEW_TOKENS}"
 )
+if (( QWEN3_DENSE_SMALL == 0 )); then
+  ROLLOUT_CONFIG+=("+rollout.setup_timeout=${ROLLOUT_SETUP_TIMEOUT}")
+fi
 SGLANG_CONFIG=(
-  "sglang.model_path=${MODEL_PATH}" "tokenizer_path=${TOKENIZER_PATH}"
+  "sglang.model_path=${MODEL_PATH}"
+  "tokenizer_path=${TOKENIZER_PATH}"
+
   "sglang.mem_fraction_static=${SGLANG_MEM_FRACTION_STATIC}"
-  "++sglang.chunked_prefill_size=${SGLANG_CHUNKED_PREFILL_SIZE}" "++sglang.page_size=${SGLANG_PAGE_SIZE}"
-  "++sglang.disable_radix_cache=True" "++sglang.disable_cuda_graph=True"
-  "++sglang.disable_cuda_graph_padding=True" "++sglang.disable_overlap_schedule=True"
+
+  "++sglang.chunked_prefill_size=${SGLANG_CHUNKED_PREFILL_SIZE}"
+  "++sglang.page_size=${SGLANG_PAGE_SIZE}"
+
+  "++sglang.disable_radix_cache=True"
+  "++sglang.disable_cuda_graph=True"
+  "++sglang.disable_cuda_graph_padding=True"
+  "++sglang.disable_overlap_schedule=True"
+
+  "+sglang.disable_custom_all_reduce=${SGLANG_DISABLE_CUSTOM_ALL_REDUCE}"
+
   "++sglang.attention_backend=${SGLANG_ATTENTION_BACKEND}"
 )
+if (( QWEN3_DENSE_SMALL == 1 )); then
+  SGLANG_CONFIG=(
+    "sglang.model_path=${MODEL_PATH}"
+    "tokenizer_path=${TOKENIZER_PATH}"
+    "sglang.mem_fraction_static=${SGLANG_MEM_FRACTION_STATIC}"
+    "++sglang.chunked_prefill_size=${SGLANG_CHUNKED_PREFILL_SIZE}"
+    "++sglang.page_size=${SGLANG_PAGE_SIZE}"
+    "++sglang.disable_radix_cache=True"
+    "++sglang.disable_cuda_graph=True"
+    "++sglang.disable_cuda_graph_padding=True"
+    "++sglang.disable_overlap_schedule=True"
+    "++sglang.attention_backend=${SGLANG_ATTENTION_BACKEND}"
+  )
+fi
 TRAINER_CONFIG=("total_train_epochs=${TOTAL_TRAIN_EPOCHS}")
 if [[ -n "${TOTAL_TRAIN_STEPS}" ]]; then
   TRAINER_CONFIG+=("++total_train_steps=${TOTAL_TRAIN_STEPS}")
