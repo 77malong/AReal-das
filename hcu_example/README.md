@@ -32,7 +32,9 @@ ______________________________________________________________________
         ├── run_qwen3_dense_megatron_sglang.sh
         ├── run_qwen3_vl_fsdp_sglang.sh
         ├── run_qwen3_moe_megatron_sglang.sh
-        └── run_glm5_1_moe_megatron_sglang.sh
+        ├── run_qwen3_5_dense_fsdp_sglang.sh
+        ├── run_qwen3_5_dense_megatron_sglang.sh
+        └── run_glm5_moe_megatron_sglang.sh
 ```
 
 `run.sh` 会扫描 `run_*_<actor_backend>_<rollout_backend>.sh`，从 launcher 文件名和顶部的 `HCU_LAUNCHER_*` 元数据自动发现 family、variant、Actor backend 和 Rollout backend；不需要维护独立注册文件。参数量不写入 launcher 文件名，具体模型由 `--model-path` 指定；未来 vLLM 使用同一命名槽位，例如 `run_qwen3_dense_fsdp_vllm.sh`。
@@ -192,7 +194,7 @@ ______________________________________________________________________
 | `qwen3`    | dense   | `8b`                  | 支持  | 支持     | Dense，推荐作为 FSDP 验证模型 |
 | `qwen3`    | vl      | `4b`                  | 支持  | 不提供   | 多模态 Geometry3K             |
 | `qwen3`    | moe     | `30b_a3b_4layers`     | 不提供 | 支持   | MoE，使用 Megatron            |
-| `glm5_1`   | moe     | `4layers`             | 不提供 | 支持   | MoE/MLA/DSA                   |
+| `glm5`     | moe     | `4layers`             | 不提供 | 支持   | MoE/MLA/DSA                   |
 
 `--model` 表示模型 family，`--variant` 区分 `dense`、`moe`、`vl` 和未来的 `vl_moe`，`--backend` 选择 Actor 的 FSDP 或 Megatron，`--rollout` 选择 SGLang 或未来的 vLLM。参数量不属于 launcher identity，由 `--model-path` 和模型目录中的 `config.json` 决定。模型路径存在 `config.json` 时，`run.sh` 会做 Dense/MoE/VL 一致性检查；无法唯一确定时会报错并列出候选。旧的 `qwen3_8b`、`qwen3_8b_fsdp_sglang` 等 key 仍然兼容。
 
