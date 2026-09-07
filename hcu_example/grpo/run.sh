@@ -84,7 +84,7 @@ normalize_family() {
     qwen2) echo qwen2 ;;
     qwen3) echo qwen3 ;;
     qwen35|qwen3_5) echo qwen3_5 ;;
-    glm5|glm5_1) echo glm5 ;;
+    glm5) echo glm5 ;;
     *) echo "${value}" ;;
   esac
 }
@@ -100,7 +100,7 @@ canonical_launcher_id() {
     qwen3_1_7b|qwen3_8b) echo qwen3_dense ;;
     qwen3_vl_4b) echo qwen3_vl ;;
     qwen3_30b_a3b_4layers) echo qwen3_moe ;;
-    glm5_4layers|glm5_1_moe_4layers|glm5_1_moe) echo glm5_moe ;;
+    glm5_4layers) echo glm5_moe ;;
     *) echo "${value}" ;;
   esac
 }

@@ -4,7 +4,7 @@
 set -Eeuo pipefail
 
 # Launcher metadata consumed by grpo/run.sh without sourcing this file.
-HCU_LAUNCHER_FAMILY=glm5_1
+HCU_LAUNCHER_FAMILY=glm5
 HCU_LAUNCHER_VARIANT=moe
 HCU_LAUNCHER_ACTOR_BACKEND=megatron
 HCU_LAUNCHER_ROLLOUT_BACKEND=sglang
