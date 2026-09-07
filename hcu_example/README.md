@@ -206,9 +206,9 @@ ______________________________________________________________________
 | `glm5`    | moe     | `4layers`         | 不提供 | 支持     | MoE/MLA/DSA                   |
 
 `--model` 表示模型 family，`--variant` 区分 `dense`、`moe`、`vl` 和未来的 `vl_moe`，`--backend` 选择
-Actor 的 FSDP 或 Megatron，`--rollout` 选择 SGLang 或未来的 vLLM。参数量不属于 launcher identity，由
-`--model-path` 和模型目录中的 `config.json` 决定。模型路径存在 `config.json` 时，`run.sh` 会做 Dense/MoE/VL
-一致性检查；无法唯一确定时会报错并列出候选。旧的 `qwen3_8b`、`qwen3_8b_fsdp_sglang` 等 key 仍然兼容。
+Actor 的 FSDP 或 Megatron，`--rollout` 选择 SGLang 或未来的 vLLM。训练时 `--variant` 为必填，`run.sh`
+不读取模型目录、不做任何推断；`--model-path` 仅透传给 launcher。参数量不属于 launcher identity，由 `--model-path`
+决定。选择器无法唯一确定 launcher 时会报错并列出候选。旧的 `qwen3_8b`、`qwen3_8b_fsdp_sglang` 等 key 仍然兼容。
 
 对于 Qwen3-30B-A3B 和 GLM-5，后续如果重新引入 PyTorch-native MoE 训练方案，应单独评估模型架构、expert 权重布局、HCU
 kernel 和 SGLang 在线权重更新，不建议恢复之前的 FSDP launcher 后直接用于正式训练。
@@ -270,8 +270,8 @@ bash run.sh \
   --backends
 ```
 
-如果模型同时存在 FSDP 和 Megatron launcher，会同时显示两个 backend；如果只剩一个 launcher，训练时通常可以由 `run.sh` 自动推断
-backend，但正式命令仍建议显式填写 `--backend`，便于日志和脚本复现。
+如果模型同时存在 FSDP 和 Megatron launcher，会同时显示两个 backend；如果该 family/variant 只有一个 launcher，省略
+`--backend` 时会自动选中它，但正式命令仍建议显式填写 `--backend`，便于日志和脚本复现。
 
 ## 7.4 查看模型配置
 

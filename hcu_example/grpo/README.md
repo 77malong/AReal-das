@@ -51,11 +51,11 @@ run_qwen3_vl_fsdp_vllm.sh
 | `qwen3`   | dense   | FSDP DP4 / Megatron TP4 | SGLang TP4 | 1×8 HCU  | qwen        | Qwen3 Dense，不按参数量拆 launcher |
 | `qwen3`   | vl      | FSDP DP4                | SGLang TP4 | 1×8 HCU  | qwen        | Geometry3K 多模态                  |
 | `qwen3`   | moe     | Megatron TP/PP/EP       | SGLang TP8 | 2×8 HCU  | qwen        | MoE，独立拓扑                      |
-| `qwen3_5` | dense   | FSDP T8 / Megatron TP8  | SGLang TP8 | 1×8 HCU  | qwen35      | Qwen3.5 Dense，fa3+fp8             |
+| `qwen3_5` | dense   | FSDP DP4 / Megatron TP4 | SGLang TP4 | 1×8 HCU  | qwen35      | Qwen3.5 Dense，fa3 + fp8 KV cache  |
 | `glm5`    | moe     | Megatron TP/EP          | SGLang TP8 | 2×8 HCU  | glm5        | MLA/DSA/custom                     |
 
-同一个 Qwen3 Dense launcher 可以接收 Qwen3-1.7B 或 Qwen3-8B；具体权重由 `--model-path` 指定。模型目录的
-`config.json` 用于做 family、Dense/MoE/VL 一致性检查。
+同一个 Qwen3 Dense launcher 可以接收 Qwen3-1.7B 或 Qwen3-8B；具体权重由 `--model-path` 指定。`run.sh`
+不读取模型目录，权重与 launcher 是否匹配在训练加载阶段暴露。
 
 ## 统一入口
 
@@ -100,9 +100,8 @@ bash run.sh \
 如果 family/variant/backend/rollout 不能唯一确定 launcher，`run.sh` 会报错并列出候选，不会静默选择错误的 Actor 或
 Rollout backend。
 
-Dense、MoE 和 VL 的区分规则是：launcher 元数据优先；模型目录存在 `config.json` 时，用
-`vision_config`、`model_type` 和 `num_experts`/`num_local_experts` 做一致性检查；`num_experts` 或
-`num_local_experts` 只有大于 1 才判定为 MoE。
+Dense、MoE 和 VL 由 `--variant` 显式指定，`run.sh` 不做任何推断。选择只依据命令行参数和 launcher 顶部的
+`HCU_LAUNCHER_*` 元数据；`--model-path` 仅透传给 launcher，不参与选择。
 
 ## 旧命令兼容
 
@@ -124,9 +123,8 @@ qwen3_30b_a3b_4layers  -> qwen3_moe_megatron_sglang
 glm5_4layers           -> glm5_moe_megatron_sglang
 ```
 
-`--profile` 仍然表示 Ray/AReaL 运行环境
-profile（`qwen`、`qwen35`、`glm5`、`base`），不是模型规模。参数量只属于模型目录及其 `config.json`，不属于 launcher
-identity。
+`--profile` 仍然表示 Ray/AReaL 运行环境 profile（`qwen`、`qwen35`、`glm5`、`base`），不是模型规模。参数量只属于
+`--model-path` 指向的模型目录，不属于 launcher identity。
 
 ## 新增模型必须做的事情
 
