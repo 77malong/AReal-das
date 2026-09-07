@@ -16,37 +16,39 @@ AReaL HCU GRPO launcher
 Model/backend discovery:
   bash run.sh --list
   bash run.sh --search=qwen3
-  bash run.sh --model=qwen3_8b --backends
-  bash run.sh --model=qwen3_8b --backend=fsdp --info
+  bash run.sh --model=qwen3 --variant=dense --backend=fsdp --rollout=sglang --backends
+  bash run.sh --model=qwen3 --variant=dense --backend=fsdp --rollout=sglang --info
   bash run.sh --check-fsdp
 
 Training:
-  bash run.sh --model=qwen3_8b --backend=fsdp [options]
+  bash run.sh --model=qwen3 --variant=dense --backend=fsdp --rollout=sglang [options]
   bash run.sh --model=qwen3_8b_fsdp_sglang [options]     # legacy alias
 
 Single-node Ray + training:
-  bash run.sh --model=qwen3_8b --backend=fsdp --restart-ray
+  bash run.sh --model=qwen3 --variant=dense --backend=fsdp --rollout=sglang --restart-ray
 
 Multi-node Ray lifecycle (run on each physical node):
   # head node
-  bash run.sh --ray-head --model=qwen3_30b_a3b_4layers --backend=megatron \
+  bash run.sh --ray-head --model=qwen3 --variant=moe --backend=megatron --rollout=sglang \
     --ray-address=<head-node-ip>:6379
 
   # worker node
-  bash run.sh --ray-worker --model=qwen3_30b_a3b_4layers --backend=megatron \
+  bash run.sh --ray-worker --model=qwen3 --variant=moe --backend=megatron --rollout=sglang \
     --ray-address=<head-node-ip>:6379 --worker-ip=<worker-node-ip>
 
   # then launch training from the head node
-  bash run.sh --model=qwen3_30b_a3b_4layers --backend=megatron \
+  bash run.sh --model=qwen3 --variant=moe --backend=megatron --rollout=sglang \
     --ray-address=<head-node-ip>:6379
 
 Options:
-  --model=<name>          Base model key, e.g. qwen3_8b.
+  --model=<name>          Model family, e.g. qwen3, or a legacy model key.
                           Legacy <model>_<backend>_sglang names are also accepted.
+  --variant=<name>        dense, moe, vl, or vl_moe.
   --backend=<name>        Actor backend: fsdp or megatron.
-  --list                  List discovered model keys and available actor backends.
-  --search=<pattern>      Search model keys by substring.
-  --backends              Show available backends for --model.
+  --rollout=<name>        Rollout backend: sglang or vllm.
+  --list                  List family/variant/backend/rollout launchers.
+  --search=<pattern>      Search family, variant, backend, rollout, or legacy keys.
+  --backends              Show available backends for the selected model.
   --info                  Show resolved defaults/readiness for a model/backend.
   --check-fsdp            Static-audit every discovered FSDP launcher.
   --dry-run               Resolve and print the launch without starting training.
@@ -73,58 +75,152 @@ Ray-only actions:
 USAGE
 }
 
-script_for() {
-  local model="$1" backend="$2"
-  printf '%s/run_%s_%s_sglang.sh\n' "${SCRIPT_DIR}" "${model}" "${backend}"
+normalize_family() {
+  local value="${1,,}"
+  value="${value//-/_}"
+  value="${value//./_}"
+  case "${value}" in
+    qwen25|qwen2_5) echo qwen2_5 ;;
+    qwen2) echo qwen2 ;;
+    qwen3) echo qwen3 ;;
+    qwen35|qwen3_5) echo qwen3_5 ;;
+    glm5|glm5_1) echo glm5_1 ;;
+    *) echo "${value}" ;;
+  esac
 }
 
-backend_from_filename() {
-  local base
-  base="$(basename "$1")"
-  if [[ "${base}" == run_*_fsdp_sglang.sh ]]; then
-    echo fsdp
-  elif [[ "${base}" == run_*_megatron_sglang.sh ]]; then
-    echo megatron
+canonical_launcher_id() {
+  local value="$1"
+  case "${value}" in
+    *_fsdp_sglang|*_megatron_sglang) value="${value%_sglang}" ;;
+    *_fsdp_vllm|*_megatron_vllm) value="${value%_vllm}" ;;
+  esac
+  case "${value}" in
+    qwen2_5_0_5b) echo qwen2_5_dense ;;
+    qwen3_1_7b|qwen3_8b) echo qwen3_dense ;;
+    qwen3_vl_4b) echo qwen3_vl ;;
+    qwen3_30b_a3b_4layers) echo qwen3_moe ;;
+    glm5_4layers|glm5_1_moe_4layers) echo glm5_1_moe ;;
+    *) echo "${value}" ;;
+  esac
+}
+
+legacy_model_key() {
+  case "$1" in
+    qwen2_5_dense) echo qwen2_5 ;;
+    qwen3_dense) echo qwen3 ;;
+    qwen3_vl) echo qwen3_vl ;;
+    qwen3_moe) echo qwen3_moe ;;
+    glm5_1_moe) echo glm5_1 ;;
+    *) echo "$1" ;;
+  esac
+}
+
+script_for() {
+  local model backend rollout
+  model="$(canonical_launcher_id "$1")"
+  backend="$2"
+  rollout="${3:-sglang}"
+  if [[ "${backend}" == fsdp || "${backend}" == megatron ]] &&
+     [[ "${rollout}" == sglang || "${rollout}" == vllm ]]; then
+    printf '%s/run_%s_%s_%s.sh\n' "${SCRIPT_DIR}" "${model}" "${backend}" "${rollout}"
   else
     return 1
   fi
 }
 
+backend_from_filename() {
+  local base
+  base="$(basename "$1")"
+  case "${base}" in
+    run_*_fsdp_sglang.sh|run_*_fsdp_vllm.sh) echo fsdp ;;
+    run_*_megatron_sglang.sh|run_*_megatron_vllm.sh) echo megatron ;;
+    *) return 1 ;;
+  esac
+}
+
+rollout_from_filename() {
+  local base
+  base="$(basename "$1")"
+  case "${base}" in
+    run_*_fsdp_sglang.sh|run_*_megatron_sglang.sh) echo sglang ;;
+    run_*_fsdp_vllm.sh|run_*_megatron_vllm.sh) echo vllm ;;
+    *) return 1 ;;
+  esac
+}
+
 model_from_filename() {
-  local base backend
+  local base backend rollout
   base="$(basename "$1")"
   backend="$(backend_from_filename "$1")" || return 1
+  rollout="$(rollout_from_filename "$1")" || return 1
   base="${base#run_}"
-  base="${base%_${backend}_sglang.sh}"
+  base="${base%_${backend}_${rollout}.sh}"
   echo "${base}"
 }
 
 discover_models() {
   local f
   shopt -s nullglob
-  for f in "${SCRIPT_DIR}"/run_*_fsdp_sglang.sh "${SCRIPT_DIR}"/run_*_megatron_sglang.sh; do
+  for f in "${SCRIPT_DIR}"/run_*_fsdp_*.sh "${SCRIPT_DIR}"/run_*_megatron_*.sh; do
     model_from_filename "${f}"
   done | sort -u
   shopt -u nullglob
 }
 
-backends_for_model() {
-  local model="$1" backend f
-  for backend in fsdp megatron; do
-    f="$(script_for "${model}" "${backend}")"
-    [[ -f "${f}" ]] && echo "${backend}"
-  done
+launcher_metadata() {
+  local file="$1" key="$2"
+  grep -m1 -E "^${key}=" "${file}" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]' || true
 }
 
-model_exists() {
-  local model="$1"
-  [[ -n "$(backends_for_model "${model}")" ]]
+launcher_family() {
+  local file="$1" value model
+  value="$(launcher_metadata "${file}" HCU_LAUNCHER_FAMILY)"
+  if [[ -z "${value}" ]]; then
+    model="$(model_from_filename "${file}")"
+    case "${model}" in
+      qwen2_5_*) value=qwen2_5 ;;
+      qwen3_5_*) value=qwen3_5 ;;
+      qwen3_vl_*|qwen3_moe_*|qwen3_*) value=qwen3 ;;
+      glm5_1_*|glm5_*) value=glm5_1 ;;
+      qwen2_*) value=qwen2 ;;
+      *) value="${model%%_*}" ;;
+    esac
+  fi
+  normalize_family "${value}"
+}
+
+launcher_variant() {
+  local file="$1" value
+  value="$(launcher_metadata "${file}" HCU_LAUNCHER_VARIANT)"
+  if [[ -z "${value}" ]]; then
+    case "$(model_from_filename "${file}")" in
+      *_vl_*) value=vl ;;
+      *_moe_*) value=moe ;;
+      *) value=dense ;;
+    esac
+  fi
+  echo "${value}"
+}
+
+launcher_actor_backend() {
+  local file="$1" value
+  value="$(launcher_metadata "${file}" HCU_LAUNCHER_ACTOR_BACKEND)"
+  [[ -n "${value}" ]] || value="$(backend_from_filename "${file}")"
+  echo "${value}"
+}
+
+launcher_rollout_backend() {
+  local file="$1" value
+  value="$(launcher_metadata "${file}" HCU_LAUNCHER_ROLLOUT_BACKEND)"
+  [[ -n "${value}" ]] || value="$(rollout_from_filename "${file}")"
+  echo "${value}"
 }
 
 extract_default() {
   local file="$1" var="$2" line
   line="$(grep -m1 -E "^(export[[:space:]]+)?${var}=" "${file}" 2>/dev/null || true)"
-  if [[ "${line}" =~ :-([^\}]*)\} ]]; then
+  if [[ "${line}" =~ :-([^}]*)} ]]; then
     printf '%s\n' "${BASH_REMATCH[1]}"
   else
     printf '%s\n' ""
@@ -133,16 +229,102 @@ extract_default() {
 
 extract_profile() {
   local file="$1" p
-  p="$(extract_default "${file}" AREAL_ENV_PROFILE)"
-  if [[ -n "${p}" ]]; then
-    echo "${p}"
-    return
+  p="$(launcher_metadata "${file}" HCU_LAUNCHER_PROFILE)"
+  [[ -n "${p}" ]] || p="$(extract_default "${file}" AREAL_ENV_PROFILE)"
+  [[ -n "${p}" ]] || p=qwen
+  echo "${p}"
+}
+
+config_has() {
+  local pattern="$1" config="$2"
+  grep -Eiq "${pattern}" <<<"${config}"
+}
+
+detect_model_config() {
+  DETECTED_FAMILY=""
+  DETECTED_VARIANT=""
+  [[ -n "${MODEL_PATH:-}" && -f "${MODEL_PATH}/config.json" ]] || return 0
+
+  local config path_token
+  config="$(<"${MODEL_PATH}/config.json")"
+  path_token="${MODEL_PATH,,}"
+  config="${config,,}"
+
+  if [[ "${path_token} ${config}" == *qwen3_5* || "${path_token} ${config}" == *qwen3.5* ]]; then
+    DETECTED_FAMILY=qwen3_5
+  elif [[ "${path_token} ${config}" == *qwen3* ]]; then
+    DETECTED_FAMILY=qwen3
+  elif [[ "${path_token}" == *qwen2.5* || "${path_token}" == *qwen2_5* ]]; then
+    DETECTED_FAMILY=qwen2_5
+  elif [[ "${path_token} ${config}" == *glm5* ]]; then
+    DETECTED_FAMILY=glm5_1
+  elif [[ "${config}" =~ \"model_type\"[[:space:]]*:[[:space:]]*\"qwen2\" ]]; then
+    DETECTED_FAMILY=qwen2
   fi
-  case "$(model_from_filename "${file}")" in
-    glm5*) echo glm5 ;;
-    qwen3_5*) echo qwen35 ;;
-    *) echo qwen ;;
-  esac
+
+  local has_vision=0 has_moe=0
+  if config_has 'vision_config|qwen[23].*_vl|vision' "${config}"; then has_vision=1; fi
+  if config_has '"num_experts"[[:space:]]*:[[:space:]]*[2-9][0-9]*|"num_local_experts"[[:space:]]*:[[:space:]]*[2-9][0-9]*|qwen[35].*_moe|glm5' "${config}"; then has_moe=1; fi
+  if (( has_vision && has_moe )); then
+    DETECTED_VARIANT=vl_moe
+  elif (( has_vision )); then
+    DETECTED_VARIANT=vl
+  elif (( has_moe )); then
+    DETECTED_VARIANT=moe
+  else
+    DETECTED_VARIANT=dense
+  fi
+}
+
+collect_launcher_matches() {
+  MATCHED_FILES=()
+  local file family variant backend rollout requested_family requested_id
+  requested_family="$(normalize_family "${MODEL:-}")"
+  requested_id="$(canonical_launcher_id "${MODEL:-}")"
+  detect_model_config
+  shopt -s nullglob
+  for file in "${SCRIPT_DIR}"/run_*_fsdp_*.sh "${SCRIPT_DIR}"/run_*_megatron_*.sh; do
+    family="$(launcher_family "${file}")"
+    variant="$(launcher_variant "${file}")"
+    backend="$(launcher_actor_backend "${file}")"
+    rollout="$(launcher_rollout_backend "${file}")"
+    [[ -n "${MODEL:-}" && "${requested_id}" == "$(model_from_filename "${file}")" ]] ||
+      [[ -z "${MODEL:-}" ]] || [[ "${requested_family}" == "${family}" ]] || continue
+    [[ -z "${VARIANT_ARG:-}" || "${VARIANT_ARG}" == "${variant}" ]] || continue
+    [[ -z "${BACKEND}" || "${BACKEND}" == "${backend}" ]] || continue
+    [[ -z "${ROLLOUT_ARG:-}" || "${ROLLOUT_ARG}" == "${rollout}" ]] || continue
+    [[ -z "${DETECTED_FAMILY}" || "${DETECTED_FAMILY}" == "${family}" ]] || continue
+    [[ -z "${DETECTED_VARIANT}" || "${DETECTED_VARIANT}" == "${variant}" ]] || continue
+    MATCHED_FILES+=("${file}")
+  done
+  shopt -u nullglob
+}
+
+resolve_launcher() {
+  collect_launcher_matches
+  if ((${#MATCHED_FILES[@]} == 0)); then
+    echo "[ERROR] No launcher matches model=${MODEL:-<auto>} variant=${VARIANT_ARG:-<auto>} backend=${BACKEND:-<auto>} rollout=${ROLLOUT_ARG:-<auto>}." >&2
+    echo "        Use: bash run.sh --list" >&2
+    return 2
+  fi
+  if ((${#MATCHED_FILES[@]} > 1)); then
+    echo "[ERROR] Launcher selection is ambiguous:" >&2
+    printf '        %s\n' "${MATCHED_FILES[@]##*/}" >&2
+    echo "        Add --variant, --backend, --rollout, or --model-path." >&2
+    return 2
+  fi
+  SELECTED_SCRIPT="${MATCHED_FILES[0]}"
+  MODEL="$(model_from_filename "${SELECTED_SCRIPT}")"
+  BACKEND="$(launcher_actor_backend "${SELECTED_SCRIPT}")"
+  ROLLOUT_ARG="$(launcher_rollout_backend "${SELECTED_SCRIPT}")"
+  RESOLVED_FAMILY="$(launcher_family "${SELECTED_SCRIPT}")"
+  RESOLVED_VARIANT="$(launcher_variant "${SELECTED_SCRIPT}")"
+  RESOLVED_MODEL_KEY="$(legacy_model_key "${MODEL}")"
+  PROFILE="$(extract_profile "${SELECTED_SCRIPT}")"
+  if [[ -n "${PROFILE_ARG:-}" && "${PROFILE_ARG}" != "${PROFILE}" ]]; then
+    echo "[WARN] --profile=${PROFILE_ARG} overrides launcher profile=${PROFILE}." >&2
+    PROFILE="${PROFILE_ARG}"
+  fi
 }
 
 parallel_dim() {
@@ -216,8 +398,8 @@ fsdp_audit_one() {
 }
 
 backend_status() {
-  local model="$1" backend="$2" file
-  file="$(script_for "${model}" "${backend}")"
+  local model="$1" backend="$2" rollout="${3:-sglang}" file
+  file="$(script_for "${model}" "${backend}" "${rollout}")"
   [[ -f "${file}" ]] || { echo unsupported; return; }
   if ! bash -n "${file}" >/dev/null 2>&1; then
     echo invalid-shell
@@ -237,37 +419,59 @@ backend_status() {
 }
 
 list_models() {
-  local model backends=() b
-  printf '%-32s %s\n' "MODEL" "ACTOR BACKENDS"
-  printf '%-32s %s\n' "--------------------------------" "-------------------------"
+  local model file family variant actor rollout legacy
+  printf '%-12s %-8s %-10s %-10s %-24s %s\n' \
+    "FAMILY" "VARIANT" "ACTOR" "ROLLOUT" "MODEL" "LEGACY KEY"
+  printf '%-12s %-8s %-10s %-10s %-24s %s\n' \
+    "------------" "--------" "----------" "----------" "------------------------" "----------"
   while IFS= read -r model; do
     [[ -n "${model}" ]] || continue
-    backends=()
-    while IFS= read -r b; do
-      [[ -n "${b}" ]] && backends+=("${b}")
-    done < <(backends_for_model "${model}")
-    printf '%-32s %s\n' "${model}" "$(IFS=,; echo "${backends[*]}")"
+    file="$(script_for "${model}" fsdp sglang 2>/dev/null || true)"
+    [[ -f "${file}" ]] || file="$(script_for "${model}" megatron sglang 2>/dev/null || true)"
+    [[ -f "${file}" ]] || continue
+    family="$(launcher_family "${file}")"
+    variant="$(launcher_variant "${file}")"
+    actor="$(launcher_actor_backend "${file}")"
+    rollout="$(launcher_rollout_backend "${file}")"
+    legacy="$(legacy_model_key "${model}")"
+    if [[ -n "${SEARCH:-}" && "${family} ${variant} ${actor} ${rollout} ${model} ${legacy}" != *"${SEARCH}"* ]]; then
+      continue
+    fi
+    printf '%-12s %-8s %-10s %-10s %-24s %s\n' \
+      "${family}" "${variant}" "${actor}" "${rollout}" "${model}" "${legacy}"
   done < <(discover_models)
 }
 
 show_backends() {
-  local model="$1" b
-  model_exists "${model}" || { echo "[ERROR] Unknown model: ${model}" >&2; return 2; }
-  echo "Model: ${model}"
-  while IFS= read -r b; do
-    [[ -n "${b}" ]] || continue
-    printf '  %-10s status=%s script=%s\n' "${b}" "$(backend_status "${model}" "${b}")" "$(basename "$(script_for "${model}" "${b}")")"
-  done < <(backends_for_model "${model}")
+  local requested="$1" file
+  MODEL="${requested}"
+  collect_launcher_matches
+  ((${#MATCHED_FILES[@]})) || {
+    echo "[ERROR] Unknown model or selector: ${requested}" >&2
+    return 2
+  }
+  echo "Model selector: ${requested}"
+  for file in "${MATCHED_FILES[@]}"; do
+    printf '  actor=%-10s rollout=%-10s variant=%-8s status=%s script=%s\n' \
+      "$(launcher_actor_backend "${file}")" "$(launcher_rollout_backend "${file}")" \
+      "$(launcher_variant "${file}")" \
+      "$(backend_status "$(model_from_filename "${file}")" "$(backend_from_filename "${file}")" "$(launcher_rollout_backend "${file}")")" \
+      "$(basename "${file}")"
+  done
 }
 
-show_info_one() {
-  local model="$1" backend="$2" file
-  file="$(script_for "${model}" "${backend}")"
-  [[ -f "${file}" ]] || { echo "[ERROR] ${model} does not support backend ${backend} in this package." >&2; return 2; }
+show_info_file() {
+  local file="$1" model backend
+  model="$(model_from_filename "${file}")"
+  backend="$(backend_from_filename "${file}")"
   echo "============================================================"
-  echo "Model key:        ${model}"
+  echo "Model key:        $(legacy_model_key "${model}")"
+  echo "Family:           $(launcher_family "${file}")"
+  echo "Variant:          $(launcher_variant "${file}")"
+  echo "Actor backend:    $(launcher_actor_backend "${file}")"
+  echo "Rollout backend:  $(launcher_rollout_backend "${file}")"
   echo "Backend:          ${backend}"
-  echo "Status:           $(backend_status "${model}" "${backend}")"
+  echo "Status:           $(backend_status "${model}" "${backend}" "$(launcher_rollout_backend "${file}")")"
   echo "Script:           ${file}"
   echo "Profile:          $(extract_profile "${file}")"
   echo "Model path:       $(extract_default "${file}" MODEL_PATH)"
@@ -279,6 +483,17 @@ show_info_one() {
   echo "Valid batch:      $(extract_default "${file}" VALID_BATCH_SIZE)"
   echo "N samples:        $(extract_default "${file}" N_SAMPLES)"
   echo "============================================================"
+}
+
+show_info_selected() {
+  collect_launcher_matches
+  ((${#MATCHED_FILES[@]})) || {
+    echo "[ERROR] Unknown model or selector: ${MODEL}" >&2
+    return 2
+  }
+  for file in "${MATCHED_FILES[@]}"; do
+    show_info_file "${file}"
+  done
 }
 
 local_primary_ip() {
@@ -298,11 +513,19 @@ is_local_ip() {
 # -----------------------------------------------------------------------------
 MODEL=""
 BACKEND=""
+VARIANT_ARG=""
+ROLLOUT_ARG=""
+SELECTED_SCRIPT=""
+RESOLVED_FAMILY=""
+RESOLVED_VARIANT=""
+RESOLVED_MODEL_KEY=""
+PROFILE=""
 SEARCH=""
 RAY_ADDRESS_ARG=""
 WORKER_IP_ARG=""
 HEAD_IP_ARG=""
 PROFILE_ARG=""
+ROLLOUT_ARG=""
 NODES_ARG=""
 GPUS_PER_NODE_ARG=""
 DO_LIST=0
@@ -316,6 +539,8 @@ RAY_ACTION=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model=*) MODEL="${1#*=}" ;;
+    --variant=*) VARIANT_ARG="${1#*=}" ;;
+    --rollout=*) ROLLOUT_ARG="${1#*=}" ;;
     --backend=*) BACKEND="${1#*=}" ;;
     --search=*) SEARCH="${1#*=}" ;;
     --list) DO_LIST=1 ;;
@@ -343,23 +568,26 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Backward-compatible aliases such as --model=qwen3_8b_fsdp_sglang.
-if [[ "${MODEL}" == *_fsdp_sglang ]]; then
-  legacy_backend=fsdp
-  MODEL="${MODEL%_fsdp_sglang}"
-  if [[ -n "${BACKEND}" && "${BACKEND}" != "${legacy_backend}" ]]; then
-    echo "[ERROR] Legacy model alias implies fsdp but --backend=${BACKEND} was supplied." >&2
-    exit 2
-  fi
-  BACKEND=fsdp
-elif [[ "${MODEL}" == *_megatron_sglang ]]; then
-  legacy_backend=megatron
-  MODEL="${MODEL%_megatron_sglang}"
-  if [[ -n "${BACKEND}" && "${BACKEND}" != "${legacy_backend}" ]]; then
-    echo "[ERROR] Legacy model alias implies megatron but --backend=${BACKEND} was supplied." >&2
-    exit 2
-  fi
-  BACKEND=megatron
-fi
+case "${MODEL}" in
+  *_fsdp_sglang|*_fsdp_vllm|*_megatron_sglang|*_megatron_vllm)
+    alias_name="${MODEL}"
+    MODEL="${alias_name%_*_*}"
+    alias_backend="${alias_name##*_}"
+    alias_backend="${alias_name%_${alias_backend}}"
+    alias_rollout="${alias_name##*_}"
+    alias_backend="${alias_backend##*_}"
+    if [[ -n "${BACKEND}" && "${BACKEND}" != "${alias_backend}" ]]; then
+      echo "[ERROR] Legacy model alias implies ${alias_backend} but --backend=${BACKEND} was supplied." >&2
+      exit 2
+    fi
+    if [[ -n "${ROLLOUT_ARG}" && "${ROLLOUT_ARG}" != "${alias_rollout}" ]]; then
+      echo "[ERROR] Legacy model alias implies ${alias_rollout} but --rollout=${ROLLOUT_ARG} was supplied." >&2
+      exit 2
+    fi
+    BACKEND="${alias_backend}"
+    ROLLOUT_ARG="${alias_rollout}"
+    ;;
+esac
 
 if [[ "${DO_LIST}" == 1 ]]; then
   list_models
@@ -367,15 +595,12 @@ if [[ "${DO_LIST}" == 1 ]]; then
 fi
 
 if [[ -n "${SEARCH}" ]]; then
-  found=0
-  while IFS= read -r model; do
-    if [[ "${model}" == *"${SEARCH}"* ]]; then
-      found=1
-      mapfile -t search_backends < <(backends_for_model "${model}")
-      printf '%-32s %s\n' "${model}" "$(IFS=,; echo "${search_backends[*]}")"
-    fi
-  done < <(discover_models)
-  [[ "${found}" == 1 ]] || { echo "No model matched: ${SEARCH}"; exit 1; }
+  search_output="$(list_models)"
+  printf '%s\n' "${search_output}"
+  if ! grep -qi -- "${SEARCH}" <<<"${search_output}"; then
+    echo "No model matched: ${SEARCH}"
+    exit 1
+  fi
   exit 0
 fi
 
@@ -392,41 +617,23 @@ if [[ "${DO_CHECK_FSDP}" == 1 ]]; then
   exit 0
 fi
 
-if [[ -n "${MODEL}" ]] && ! model_exists "${MODEL}"; then
-  echo "[ERROR] Unknown model: ${MODEL}" >&2
-  echo >&2
-  list_models >&2
-  exit 2
-fi
-
 if [[ "${DO_BACKENDS}" == 1 ]]; then
-  [[ -n "${MODEL}" ]] || { echo "[ERROR] --backends requires --model=<name>." >&2; exit 2; }
+  [[ -n "${MODEL}" ]] || { echo "[ERROR] --backends requires --model=<family-or-key>." >&2; exit 2; }
   show_backends "${MODEL}"
-  exit 0
+  exit $?
 fi
 
 if [[ "${DO_INFO}" == 1 ]]; then
-  [[ -n "${MODEL}" ]] || { echo "[ERROR] --info requires --model=<name>." >&2; exit 2; }
-  if [[ -n "${BACKEND}" ]]; then
-    show_info_one "${MODEL}" "${BACKEND}"
-  else
-    while IFS= read -r b; do
-      [[ -n "${b}" ]] && show_info_one "${MODEL}" "${b}"
-    done < <(backends_for_model "${MODEL}")
-  fi
-  exit 0
+  [[ -n "${MODEL}" ]] || { echo "[ERROR] --info requires --model=<family-or-key>." >&2; exit 2; }
+  show_info_selected
+  exit $?
 fi
 
-# Resolve backend for training or model-aware Ray operations.
-if [[ -n "${MODEL}" && -z "${BACKEND}" ]]; then
-  mapfile -t available_backends < <(backends_for_model "${MODEL}")
-  if ((${#available_backends[@]} == 1)); then
-    BACKEND="${available_backends[0]}"
-  elif [[ -z "${RAY_ACTION}" ]]; then
-    echo "[ERROR] Model ${MODEL} has multiple backends; pass --backend=fsdp or --backend=megatron." >&2
-    show_backends "${MODEL}" >&2
-    exit 2
-  fi
+# Resolve one launcher before training or model-aware Ray operations.  A family
+# with multiple actor/rollout backends must be narrowed with --variant,
+# --backend, --rollout, or a model path whose config identifies the variant.
+if [[ -n "${MODEL}" ]]; then
+  resolve_launcher || exit $?
 fi
 
 if [[ -n "${BACKEND}" && "${BACKEND}" != fsdp && "${BACKEND}" != megatron ]]; then
@@ -434,25 +641,12 @@ if [[ -n "${BACKEND}" && "${BACKEND}" != fsdp && "${BACKEND}" != megatron ]]; th
   exit 2
 fi
 
-SELECTED_SCRIPT=""
-if [[ -n "${MODEL}" && -n "${BACKEND}" ]]; then
-  SELECTED_SCRIPT="$(script_for "${MODEL}" "${BACKEND}")"
-  [[ -f "${SELECTED_SCRIPT}" ]] || {
-    echo "[ERROR] ${MODEL} does not have backend ${BACKEND}." >&2
-    show_backends "${MODEL}" >&2
-    exit 2
-  }
-fi
-
-if [[ -n "${PROFILE_ARG}" ]]; then
+if [[ -z "${PROFILE:-}" && -n "${PROFILE_ARG}" ]]; then
   PROFILE="${PROFILE_ARG}"
-elif [[ -n "${SELECTED_SCRIPT}" ]]; then
+elif [[ -z "${PROFILE:-}" && -n "${SELECTED_SCRIPT}" ]]; then
   PROFILE="$(extract_profile "${SELECTED_SCRIPT}")"
-elif [[ -n "${MODEL}" ]]; then
-  first_backend="$(backends_for_model "${MODEL}" | head -1)"
-  PROFILE="$(extract_profile "$(script_for "${MODEL}" "${first_backend}")")"
 else
-  PROFILE=""
+  PROFILE="${PROFILE:-}"
 fi
 
 # -----------------------------------------------------------------------------
@@ -481,11 +675,6 @@ if [[ -n "${RAY_ACTION}" ]]; then
   if [[ -n "${SELECTED_SCRIPT}" ]]; then
     default_gpus="$(extract_default "${SELECTED_SCRIPT}" N_GPUS_PER_NODE)"
     default_nodes="$(extract_default "${SELECTED_SCRIPT}" N_NODES)"
-  elif [[ -n "${MODEL}" ]]; then
-    first_backend="$(backends_for_model "${MODEL}" | head -1)"
-    tmp_script="$(script_for "${MODEL}" "${first_backend}")"
-    default_gpus="$(extract_default "${tmp_script}" N_GPUS_PER_NODE)"
-    default_nodes="$(extract_default "${tmp_script}" N_NODES)"
   fi
   NUM_GPUS_RESOLVED="${N_GPUS_PER_NODE:-${default_gpus:-8}}"
 
@@ -507,7 +696,7 @@ if [[ -n "${RAY_ACTION}" ]]; then
       if [[ -n "${default_nodes}" && "${default_nodes}" -gt 1 ]]; then
         echo
         echo "[INFO] This model defaults to ${default_nodes} nodes. Start each worker with:"
-        echo "  bash run.sh --ray-worker --model=${MODEL}${BACKEND:+ --backend=${BACKEND}} --ray-address=${RAY_ADDRESS} --worker-ip=<worker-ip>"
+      echo "  bash run.sh --ray-worker --model=${RESOLVED_FAMILY} --variant=${RESOLVED_VARIANT} --backend=${BACKEND} --rollout=${ROLLOUT_ARG} --ray-address=${RAY_ADDRESS} --worker-ip=<worker-ip>"
       fi
       exit 0
       ;;
@@ -559,20 +748,20 @@ REQUESTED_N_NODES="${N_NODES:-${DEFAULT_N_NODES}}"
 REQUESTED_GPUS_PER_NODE="${N_GPUS_PER_NODE:-${DEFAULT_GPUS_PER_NODE}}"
 
 if [[ "${BACKEND}" == fsdp ]]; then
-  st="$(backend_status "${MODEL}" fsdp)"
+  st="$(backend_status "${MODEL}" fsdp "${ROLLOUT_ARG:-sglang}")"
   if [[ "${st}" == invalid-batch || "${st}" == invalid-shell ]]; then
     echo "[ERROR] FSDP launcher static status is ${st}. Run: bash run.sh --check-fsdp" >&2
     exit 2
   fi
 fi
 
-if [[ "${RESTART_RAY}" == 1 ]]; then
+if [[ "${RESTART_RAY}" == 1 && "${DO_DRY_RUN}" != 1 ]]; then
   if [[ "${REQUESTED_N_NODES}" != 1 ]]; then
     echo "[ERROR] --restart-ray is single-node only; ${MODEL}/${BACKEND} requests N_NODES=${REQUESTED_N_NODES}." >&2
     echo "        Multi-node sequence:" >&2
-    echo "          1) head:   bash run.sh --ray-head --model=${MODEL} --backend=${BACKEND} --ray-address=<head-ip>:6379" >&2
-    echo "          2) worker: bash run.sh --ray-worker --model=${MODEL} --backend=${BACKEND} --ray-address=<head-ip>:6379 --worker-ip=<worker-ip>" >&2
-    echo "          3) train:  bash run.sh --model=${MODEL} --backend=${BACKEND} --ray-address=<head-ip>:6379" >&2
+    echo "          1) head:   bash run.sh --ray-head --model=${RESOLVED_FAMILY} --variant=${RESOLVED_VARIANT} --backend=${BACKEND} --rollout=${ROLLOUT_ARG} --ray-address=<head-ip>:6379" >&2
+    echo "          2) worker: bash run.sh --ray-worker --model=${RESOLVED_FAMILY} --variant=${RESOLVED_VARIANT} --backend=${BACKEND} --rollout=${ROLLOUT_ARG} --ray-address=<head-ip>:6379 --worker-ip=<worker-ip>" >&2
+    echo "          3) train:  bash run.sh --model=${RESOLVED_FAMILY} --variant=${RESOLVED_VARIANT} --backend=${BACKEND} --rollout=${ROLLOUT_ARG} --ray-address=<head-ip>:6379" >&2
     exit 2
   fi
 
@@ -606,8 +795,11 @@ fi
 
 if [[ "${DO_DRY_RUN}" == 1 ]]; then
   echo "===== Dry run ====="
-  echo "model=${MODEL}"
+  echo "model=${RESOLVED_MODEL_KEY:-${MODEL}}"
+  echo "family=${RESOLVED_FAMILY:-<auto>}"
+  echo "variant=${RESOLVED_VARIANT:-<auto>}"
   echo "backend=${BACKEND}"
+  echo "rollout=${ROLLOUT_ARG:-<auto>}"
   echo "script=${SELECTED_SCRIPT}"
   echo "profile=${AREAL_ENV_PROFILE}"
   echo "nodes=${REQUESTED_N_NODES}"
