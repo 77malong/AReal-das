@@ -80,21 +80,14 @@ normalize_family() {
   value="${value//-/_}"
   value="${value//./_}"
   case "${value}" in
-    qwen25|qwen2_5) echo qwen2_5 ;;
-    qwen2) echo qwen2 ;;
-    qwen3) echo qwen3 ;;
-    qwen35|qwen3_5) echo qwen3_5 ;;
-    glm5) echo glm5 ;;
+    qwen25) echo qwen2_5 ;;
+    qwen35) echo qwen3_5 ;;
     *) echo "${value}" ;;
   esac
 }
 
 canonical_launcher_id() {
   local value="$1"
-  case "${value}" in
-    *_fsdp_sglang|*_megatron_sglang) value="${value%_sglang}" ;;
-    *_fsdp_vllm|*_megatron_vllm) value="${value%_vllm}" ;;
-  esac
   case "${value}" in
     qwen2_5_0_5b) echo qwen2_5_dense ;;
     qwen3_1_7b|qwen3_8b) echo qwen3_dense ;;
@@ -160,62 +153,41 @@ model_from_filename() {
   echo "${base}"
 }
 
-discover_models() {
-  local f
-  shopt -s nullglob
-  for f in "${SCRIPT_DIR}"/run_*_fsdp_*.sh "${SCRIPT_DIR}"/run_*_megatron_*.sh; do
-    model_from_filename "${f}"
-  done | sort -u
-  shopt -u nullglob
-}
-
 launcher_metadata() {
   local file="$1" key="$2"
   grep -m1 -E "^${key}=" "${file}" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]' || true
 }
 
-launcher_family() {
-  local file="$1" value model
-  value="$(launcher_metadata "${file}" HCU_LAUNCHER_FAMILY)"
+# Launcher metadata is declarative and mandatory: run.sh reads these keys with
+# grep instead of sourcing the launcher, which would execute it. A launcher
+# missing a key is a bug in that launcher, not something to guess around.
+require_launcher_metadata() {
+  local file="$1" key="$2" value
+  value="$(launcher_metadata "${file}" "${key}")"
   if [[ -z "${value}" ]]; then
-    model="$(model_from_filename "${file}")"
-    case "${model}" in
-      qwen2_5_*) value=qwen2_5 ;;
-      qwen3_5_*) value=qwen3_5 ;;
-      qwen3_vl_*|qwen3_moe_*|qwen3_*) value=qwen3 ;;
-      glm5_*) value=glm5 ;;
-      qwen2_*) value=qwen2 ;;
-      *) value="${model%%_*}" ;;
-    esac
+    echo "[ERROR] ${file##*/} is missing required launcher metadata ${key}." >&2
+    echo "        Add '${key}=<value>' near the top of the launcher." >&2
+    return 2
   fi
+  printf '%s\n' "${value}"
+}
+
+launcher_family() {
+  local value
+  value="$(require_launcher_metadata "$1" HCU_LAUNCHER_FAMILY)" || return 2
   normalize_family "${value}"
 }
 
 launcher_variant() {
-  local file="$1" value
-  value="$(launcher_metadata "${file}" HCU_LAUNCHER_VARIANT)"
-  if [[ -z "${value}" ]]; then
-    case "$(model_from_filename "${file}")" in
-      *_vl_*) value=vl ;;
-      *_moe_*) value=moe ;;
-      *) value=dense ;;
-    esac
-  fi
-  echo "${value}"
+  require_launcher_metadata "$1" HCU_LAUNCHER_VARIANT
 }
 
 launcher_actor_backend() {
-  local file="$1" value
-  value="$(launcher_metadata "${file}" HCU_LAUNCHER_ACTOR_BACKEND)"
-  [[ -n "${value}" ]] || value="$(backend_from_filename "${file}")"
-  echo "${value}"
+  require_launcher_metadata "$1" HCU_LAUNCHER_ACTOR_BACKEND
 }
 
 launcher_rollout_backend() {
-  local file="$1" value
-  value="$(launcher_metadata "${file}" HCU_LAUNCHER_ROLLOUT_BACKEND)"
-  [[ -n "${value}" ]] || value="$(rollout_from_filename "${file}")"
-  echo "${value}"
+  require_launcher_metadata "$1" HCU_LAUNCHER_ROLLOUT_BACKEND
 }
 
 extract_default() {
@@ -229,11 +201,7 @@ extract_default() {
 }
 
 extract_profile() {
-  local file="$1" p
-  p="$(launcher_metadata "${file}" HCU_LAUNCHER_PROFILE)"
-  [[ -n "${p}" ]] || p="$(extract_default "${file}" AREAL_ENV_PROFILE)"
-  [[ -n "${p}" ]] || p=qwen
-  echo "${p}"
+  require_launcher_metadata "$1" HCU_LAUNCHER_PROFILE
 }
 
 collect_launcher_matches() {
@@ -304,9 +272,8 @@ simple_world_size() {
 }
 
 fsdp_audit_one() {
-  local model="$1" file actor train_batch valid_batch dp nodes gpus rollout total_gpu actor_world rollout_world
-  file="$(script_for "${model}" fsdp)"
-  [[ -f "${file}" ]] || return 1
+  local file="$1" model actor train_batch valid_batch dp nodes gpus rollout total_gpu actor_world rollout_world
+  model="$(model_from_filename "${file}")"
 
   actor="$(extract_default "${file}" ACTOR_BACKEND)"
   rollout="$(extract_default "${file}" ROLLOUT_BACKEND)"
@@ -345,7 +312,8 @@ fsdp_audit_one() {
   fi
 
   printf '%-30s %-6s dp=%-2s batch=%-3s actor=%-16s rollout=%-16s nodes=%sx%s' \
-    "${model}" "${status}" "${dp}" "${train_batch}" "${actor}" "${rollout}" "${nodes}" "${gpus}"
+    "${model}_$(launcher_rollout_backend "${file}")" \
+    "${status}" "${dp}" "${train_batch}" "${actor}" "${rollout}" "${nodes}" "${gpus}"
   if ((${#notes[@]})); then
     printf '  [%s]' "$(IFS=,; echo "${notes[*]}")"
   fi
@@ -381,22 +349,24 @@ list_models() {
     "FAMILY" "VARIANT" "ACTOR" "ROLLOUT" "MODEL" "LEGACY KEY"
   printf '%-12s %-8s %-10s %-10s %-24s %s\n' \
     "------------" "--------" "----------" "----------" "------------------------" "----------"
-  while IFS= read -r model; do
-    [[ -n "${model}" ]] || continue
-    file="$(script_for "${model}" fsdp sglang 2>/dev/null || true)"
-    [[ -f "${file}" ]] || file="$(script_for "${model}" megatron sglang 2>/dev/null || true)"
-    [[ -f "${file}" ]] || continue
+  # Iterate launcher files, not model keys: a family/variant with both an FSDP
+  # and a Megatron launcher must show one row per launcher.
+  shopt -s nullglob
+  for file in "${SCRIPT_DIR}"/run_*_fsdp_*.sh "${SCRIPT_DIR}"/run_*_megatron_*.sh; do
+    model="$(model_from_filename "${file}")" || continue
     family="$(launcher_family "${file}")"
     variant="$(launcher_variant "${file}")"
     actor="$(launcher_actor_backend "${file}")"
     rollout="$(launcher_rollout_backend "${file}")"
     legacy="$(legacy_model_key "${model}")"
-    if [[ -n "${SEARCH:-}" && "${family} ${variant} ${actor} ${rollout} ${model} ${legacy}" != *"${SEARCH}"* ]]; then
+    if [[ -n "${SEARCH:-}" &&
+          "${family} ${variant} ${actor} ${rollout} ${model} ${legacy}" != *"${SEARCH,,}"* ]]; then
       continue
     fi
     printf '%-12s %-8s %-10s %-10s %-24s %s\n' \
       "${family}" "${variant}" "${actor}" "${rollout}" "${model}" "${legacy}"
-  done < <(discover_models)
+  done | sort
+  shopt -u nullglob
 }
 
 show_backends() {
@@ -427,13 +397,12 @@ show_info_file() {
   echo "Variant:          $(launcher_variant "${file}")"
   echo "Actor backend:    $(launcher_actor_backend "${file}")"
   echo "Rollout backend:  $(launcher_rollout_backend "${file}")"
-  echo "Backend:          ${backend}"
   echo "Status:           $(backend_status "${model}" "${backend}" "$(launcher_rollout_backend "${file}")")"
   echo "Script:           ${file}"
   echo "Profile:          $(extract_profile "${file}")"
   echo "Model path:       $(extract_default "${file}" MODEL_PATH)"
-  echo "Actor backend:    $(extract_default "${file}" ACTOR_BACKEND)"
-  echo "Rollout backend:  $(extract_default "${file}" ROLLOUT_BACKEND)"
+  echo "Actor spec:       $(extract_default "${file}" ACTOR_BACKEND)"
+  echo "Rollout spec:     $(extract_default "${file}" ROLLOUT_BACKEND)"
   echo "Nodes:            $(extract_default "${file}" N_NODES)"
   echo "GPUs/node:        $(extract_default "${file}" N_GPUS_PER_NODE)"
   echo "Train batch:      $(extract_default "${file}" TRAIN_BATCH_SIZE)"
@@ -482,7 +451,6 @@ RAY_ADDRESS_ARG=""
 WORKER_IP_ARG=""
 HEAD_IP_ARG=""
 PROFILE_ARG=""
-ROLLOUT_ARG=""
 NODES_ARG=""
 GPUS_PER_NODE_ARG=""
 DO_LIST=0
@@ -529,9 +497,8 @@ case "${MODEL}" in
   *_fsdp_sglang|*_fsdp_vllm|*_megatron_sglang|*_megatron_vllm)
     alias_name="${MODEL}"
     MODEL="${alias_name%_*_*}"
-    alias_backend="${alias_name##*_}"
-    alias_backend="${alias_name%_${alias_backend}}"
     alias_rollout="${alias_name##*_}"
+    alias_backend="${alias_name%_${alias_rollout}}"
     alias_backend="${alias_backend##*_}"
     if [[ -n "${BACKEND}" && "${BACKEND}" != "${alias_backend}" ]]; then
       echo "[ERROR] Legacy model alias implies ${alias_backend} but --backend=${BACKEND} was supplied." >&2
@@ -552,9 +519,11 @@ if [[ "${DO_LIST}" == 1 ]]; then
 fi
 
 if [[ -n "${SEARCH}" ]]; then
+  # list_models already applies SEARCH; count data rows rather than re-grepping
+  # the rendered table, whose header would match generic patterns.
   search_output="$(list_models)"
   printf '%s\n' "${search_output}"
-  if ! grep -qi -- "${SEARCH}" <<<"${search_output}"; then
+  if (( $(printf '%s\n' "${search_output}" | tail -n +3 | grep -c .) == 0 )); then
     echo "No model matched: ${SEARCH}"
     exit 1
   fi
@@ -564,10 +533,11 @@ fi
 if [[ "${DO_CHECK_FSDP}" == 1 ]]; then
   echo "===== FSDP launcher static audit ====="
   failed=0
-  while IFS= read -r model; do
-    [[ -f "$(script_for "${model}" fsdp)" ]] || continue
-    fsdp_audit_one "${model}" || failed=1
-  done < <(discover_models)
+  shopt -s nullglob
+  for file in "${SCRIPT_DIR}"/run_*_fsdp_*.sh; do
+    fsdp_audit_one "${file}" || failed=1
+  done
+  shopt -u nullglob
   echo
   echo "Legend: OK=configured, WARN=non-fatal static warning, ERROR=launcher invalid."
   [[ "${failed}" == 0 ]] || exit 2
@@ -617,12 +587,10 @@ if [[ -n "${MODEL}" ]]; then
 fi
 
 
-if [[ -z "${PROFILE:-}" && -n "${PROFILE_ARG}" ]]; then
+# resolve_launcher() sets PROFILE from launcher metadata when --model is given;
+# --profile only applies to model-less Ray actions.
+if [[ -z "${PROFILE}" ]]; then
   PROFILE="${PROFILE_ARG}"
-elif [[ -z "${PROFILE:-}" && -n "${SELECTED_SCRIPT}" ]]; then
-  PROFILE="$(extract_profile "${SELECTED_SCRIPT}")"
-else
-  PROFILE="${PROFILE:-}"
 fi
 
 # -----------------------------------------------------------------------------
@@ -760,13 +728,8 @@ if [[ "${RESTART_RAY}" == 1 && "${DO_DRY_RUN}" != 1 ]]; then
   export RAY_ADDRESS="${RAY_HEAD_IP}:${RAY_PORT}"
   echo "===== Restarting single-node Ray for ${MODEL}/${BACKEND} ====="
   echo "profile=${AREAL_ENV_PROFILE} address=${RAY_ADDRESS} gpus=${REQUESTED_GPUS_PER_NODE}"
-  if [[ "${DO_DRY_RUN}" == 1 ]]; then
-    STOP_EXISTING_RAY=1 NUM_GPUS="${REQUESTED_GPUS_PER_NODE}" \
-      bash "${EXAMPLE_ROOT}/scripts/start_ray.sh" "${RAY_HEAD_IP}"
-  else
-    VALIDATE_RAY_WORKER_ENV=0 STOP_EXISTING_RAY=1 NUM_GPUS="${REQUESTED_GPUS_PER_NODE}" \
-      bash "${EXAMPLE_ROOT}/scripts/start_ray.sh" "${RAY_HEAD_IP}"
-  fi
+  VALIDATE_RAY_WORKER_ENV=0 STOP_EXISTING_RAY=1 NUM_GPUS="${REQUESTED_GPUS_PER_NODE}" \
+    bash "${EXAMPLE_ROOT}/scripts/start_ray.sh" "${RAY_HEAD_IP}"
 fi
 
 if [[ "${DO_DRY_RUN}" == 1 ]]; then
