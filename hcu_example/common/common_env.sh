@@ -264,8 +264,38 @@ case "${AREAL_ENV_PROFILE}" in
     export NCCL_MIN_NCHANNELS="${NCCL_MIN_NCHANNELS:-8}"
     export ALLREDUCE_STREAM_WITH_COMPUTE="${ALLREDUCE_STREAM_WITH_COMPUTE:-1}"
     ;;
+  deepseek)
+    # DeepSeek-R1/V3: MLA + MoE path via DCU. AITER optimization is controlled
+    # by env flags that default to ON on HIP/ROCm, so it is explicitly disabled
+    # here for DeepSeek. SGLANG_USE_AITER remains the master switch.
+    export SGLANG_USE_AITER="${SGLANG_USE_AITER:-0}"
+    export SGLANG_USE_AITER_AR="${SGLANG_USE_AITER_AR:-0}"
+    export SGLANG_ROCM_USE_AITER_MOE="${SGLANG_ROCM_USE_AITER_MOE:-0}"
+    # DeepSeek uses the speculative-v2 / My-scripts style DCU triton kernels.
+    export SGLANG_ENABLE_SPEC_V2="${SGLANG_ENABLE_SPEC_V2:-1}"
+    export SGLANG_CREATE_EXTEND_AFTER_DECODE_SPEC_INFO="${SGLANG_CREATE_EXTEND_AFTER_DECODE_SPEC_INFO:-1}"
+    export SGLANG_ASSIGN_EXTEND_CACHE_LOCS="${SGLANG_ASSIGN_EXTEND_CACHE_LOCS:-1}"
+    export SGLANG_ASSIGN_REQ_TO_TOKEN_POOL="${SGLANG_ASSIGN_REQ_TO_TOKEN_POOL:-1}"
+    export SGLANG_GET_LAST_LOC="${SGLANG_GET_LAST_LOC:-1}"
+    export SGLANG_CREATE_FLASHMLA_KV_INDICES_TRITON="${SGLANG_CREATE_FLASHMLA_KV_INDICES_TRITON:-1}"
+    export SGLANG_CREATE_CHUNKED_PREFIX_CACHE_KV_INDICES="${SGLANG_CREATE_CHUNKED_PREFIX_CACHE_KV_INDICES:-1}"
+    # DCU lightop / fused kernels used by the DeepSeek launcher.
+    export SGLANG_USE_LIGHTOP="${SGLANG_USE_LIGHTOP:-1}"
+    export SGLANG_USE_OPT_CAT="${SGLANG_USE_OPT_CAT:-1}"
+    export SGLANG_USE_FP8_W8A8_MOE="${SGLANG_USE_FP8_W8A8_MOE:-1}"
+    export SGLANG_USE_RMS_QUANT_PATH="${SGLANG_USE_RMS_QUANT_PATH:-1}"
+    export USE_FUSED_RMS_QUANT_PATH="${USE_FUSED_RMS_QUANT_PATH:-1}"
+    export SGLANG_USE_FUSED_RMSNORM_ROPE="${SGLANG_USE_FUSED_RMSNORM_ROPE:-1}"
+    # NCCL / HSA / AQL tuning for large-scale runs.
+    export HSA_KERNARG_POOL_SIZE="${HSA_KERNARG_POOL_SIZE:-8388608}"
+    export ROC_AQL_QUEUE_SIZE="${ROC_AQL_QUEUE_SIZE:-131072}"
+    export NCCL_MAX_NCHANNELS="${NCCL_MAX_NCHANNELS:-16}"
+    export NCCL_MIN_NCHANNELS="${NCCL_MIN_NCHANNELS:-16}"
+    export ALLREDUCE_STREAM_WITH_COMPUTE="${ALLREDUCE_STREAM_WITH_COMPUTE:-1}"
+    export SGLANG_DISABLE_CUSTOM_ALL_REDUCE="${SGLANG_DISABLE_CUSTOM_ALL_REDUCE:-True}"
+    ;;
   *)
-    echo "[ERROR] Unknown AREAL_ENV_PROFILE=${AREAL_ENV_PROFILE}. Use base, qwen, qwen35, or glm5." >&2
+    echo "[ERROR] Unknown AREAL_ENV_PROFILE=${AREAL_ENV_PROFILE}. Use base, qwen, qwen35, glm5, or deepseek." >&2
     return 2 2>/dev/null || exit 2
     ;;
 esac

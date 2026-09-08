@@ -69,7 +69,7 @@ Ray-only actions:
   --worker-ip=<ip>        Worker node IP for --ray-worker (auto-detected otherwise).
   --head-ip=<ip>          Head bind IP for --ray-head/--restart-ray.
   --profile=<name>        Ray environment profile if --model is omitted:
-                          qwen, qwen35, glm5, base.
+                          qwen, qwen35, glm5, deepseek, base.
 
   -h, --help              Show this help.
 USAGE
@@ -94,6 +94,7 @@ canonical_launcher_id() {
     qwen3_vl_4b) echo qwen3_vl ;;
     qwen3_30b_a3b_4layers) echo qwen3_moe ;;
     glm5_4layers) echo glm5_moe ;;
+    deepseek_r1_4layers|deepseek_r1|deepseekr1) echo deepseek_moe ;;
     *) echo "${value}" ;;
   esac
 }
@@ -106,6 +107,7 @@ legacy_model_key() {
     qwen3_moe) echo qwen3_moe ;;
     qwen3_5_dense) echo qwen3_5 ;;
     glm5_moe) echo glm5 ;;
+    deepseek_moe) echo deepseek ;;
     *) echo "$1" ;;
   esac
 }
@@ -598,7 +600,7 @@ fi
 # -----------------------------------------------------------------------------
 if [[ -n "${RAY_ACTION}" ]]; then
   [[ -n "${PROFILE}" ]] || {
-    echo "[ERROR] ${RAY_ACTION} action needs --model=<name> or --profile=<qwen|qwen35|glm5|base>." >&2
+    echo "[ERROR] ${RAY_ACTION} action needs --model=<name> or --profile=<qwen|qwen35|glm5|deepseek|base>." >&2
     exit 2
   }
   export AREAL_ENV_PROFILE="${PROFILE}"
