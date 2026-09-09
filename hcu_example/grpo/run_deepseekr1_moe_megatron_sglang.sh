@@ -83,6 +83,7 @@ SGLANG_PAGE_SIZE="${SGLANG_PAGE_SIZE:-64}"
 SGLANG_KV_CACHE_DTYPE="${SGLANG_KV_CACHE_DTYPE:-fp8_e4m3}"
 SGLANG_MAX_RUNNING_REQUESTS="${SGLANG_MAX_RUNNING_REQUESTS:-256}"
 SGLANG_ATTENTION_BACKEND="${SGLANG_ATTENTION_BACKEND:-dcu_mla}"
+SGLANG_FP8_GEMM_BACKEND="${SGLANG_FP8_GEMM_BACKEND:-triton}"
 
 # ==============================================================================
 # Preflight checks
@@ -242,6 +243,7 @@ SGLANG_CONFIG=(
   "++sglang.disable_cuda_graph_padding=true"
   "++sglang.disable_overlap_schedule=true"
   "++sglang.attention_backend=${SGLANG_ATTENTION_BACKEND}"
+  "+sglang.fp8_gemm_backend=${SGLANG_FP8_GEMM_BACKEND}"
   "+sglang.disable_custom_all_reduce=${SGLANG_DISABLE_CUSTOM_ALL_REDUCE:-True}"
 )
 
@@ -272,6 +274,7 @@ echo "  Actor MB tokens        : ${ACTOR_MB_TOKENS}"
 echo "  Max new tokens         : ${MAX_NEW_TOKENS}"
 echo "  SGLang context length  : ${SGLANG_CONTEXT_LENGTH}"
 echo "  SGLang attention       : ${SGLANG_ATTENTION_BACKEND}"
+echo "  SGLang FP8 GEMM       : ${SGLANG_FP8_GEMM_BACKEND}"
 echo "  SGLang KV cache dtype  : ${SGLANG_KV_CACHE_DTYPE}"
 echo "  AITER (AR/MoE)         : ${SGLANG_USE_AITER_AR} / ${SGLANG_ROCM_USE_AITER_MOE} (0 = off)"
 echo "  Weight update mode     : ${WEIGHT_UPDATE_MODE}"
