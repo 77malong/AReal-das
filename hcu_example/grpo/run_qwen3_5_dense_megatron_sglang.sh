@@ -54,6 +54,7 @@ ACTOR_CONFIG=(
   "actor.optimizer.lr=${ACTOR_LR}"
   "actor.mb_spec.max_tokens_per_mb=${ACTOR_MAX_TOKENS_PER_MB}"
   "++actor.attn_impl=${ACTOR_ATTN_IMPL}"
+  ++actor.megatron.bridge_type=megatron-bridge
 )
 ROLLOUT_CONFIG=(
   "rollout.backend=${ROLLOUT_BACKEND}"
