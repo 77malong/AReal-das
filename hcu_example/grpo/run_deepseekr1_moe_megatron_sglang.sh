@@ -72,7 +72,7 @@ TOTAL_TRAIN_STEPS="${TOTAL_TRAIN_STEPS:-10}"
 ACTOR_N_MBS="${ACTOR_N_MBS:-1}"
 ACTOR_MB_TOKENS="${ACTOR_MB_TOKENS:-4096}"
 ACTOR_LR="${ACTOR_LR:-1.0e-6}"
-
+ACTOR_TORCH_COMPILE_DISABLE="${ACTOR_TORCH_COMPILE_DISABLE:-1}"
 # ==============================================================================
 # SGLang
 # ==============================================================================
@@ -215,6 +215,7 @@ ACTOR_CONFIG=(
   "actor.kl_ctl=0.0"
   "++actor.mb_spec.n_mbs=${ACTOR_N_MBS}"
   "++actor.mb_spec.max_tokens_per_mb=${ACTOR_MB_TOKENS}"
+  "++actor.scheduling_spec.0.env_vars.TORCH_COMPILE_DISABLE=${ACTOR_TORCH_COMPILE_DISABLE}"
 )
 
 ROLLOUT_CONFIG=(
