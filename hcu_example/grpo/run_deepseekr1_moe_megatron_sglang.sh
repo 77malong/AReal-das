@@ -38,10 +38,10 @@ DATASET_PATH="${DATASET_PATH:-openai/gsm8k}"
 N_NODES="${N_NODES:-2}"
 N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-8}"
 
-# Actor: attention d1/p1/t4, FFN d1/p1/t1/e8 (DeepSeek MoE)
-# Rollout: SGLang d1/p1/t8, DCU MLA attention backend
-ACTOR_BACKEND="${ACTOR_BACKEND:-megatron:(attn:d1p1t4|ffn:d1p1t1e8)}"
-ROLLOUT_BACKEND="${ROLLOUT_BACKEND:-sglang:d1p1t8}"
+# Actor: attention d1/p1/t4, FFN d1/p1/t1/e4 (DeepSeek MoE)
+# Rollout: SGLang d1/p1/t4, DCU MLA attention backend
+ACTOR_BACKEND="${ACTOR_BACKEND:-megatron:(attn:d1p1t4|ffn:d1p1t1e4)}"
+ROLLOUT_BACKEND="${ROLLOUT_BACKEND:-sglang:d1p1t4}"
 
 BRIDGE_TYPE="${BRIDGE_TYPE:-megatron-bridge}"
 USE_MBRIDGE_SAVE="${USE_MBRIDGE_SAVE:-false}"
@@ -50,7 +50,7 @@ WEIGHT_UPDATE_MODE="${WEIGHT_UPDATE_MODE:-xccl}"
 # ==============================================================================
 # Experiment
 # ==============================================================================
-EXPERIMENT_NAME="${EXPERIMENT_NAME:-gsm8k-deepseek-r1-4layer-hcu-2nodes-megatron}"
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-gsm8k-deepseek-r1-4layer-megatron-sglang}"
 TRIAL_NAME="${TRIAL_NAME:-tp8-dcu-mla-moe-smoke}"
 TIMESTAMP="${TIMESTAMP:-$(date '+%Y%m%d-%H%M%S')}"
 LOG_DIR="${LOG_DIR:-${LOG_ROOT}/${EXPERIMENT_NAME}-${TRIAL_NAME}-${TIMESTAMP}}"
