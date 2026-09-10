@@ -23,12 +23,13 @@ run_qwen3_5_dense_fsdp_sglang.sh
 run_qwen3_5_dense_megatron_sglang.sh
 run_glm5_moe_megatron_sglang.sh
 run_gemma3_vl_fsdp_sglang.sh
+run_deepseekr1_moe_megatron_sglang.sh
 ```
 
 字段含义：
 
 ```text
-family         = qwen2_5 / qwen3 / qwen3_5 / glm5 / gemma3
+family         = qwen2_5 / qwen3 / qwen3_5 / glm5 / gemma3 / deepseek
 variant        = dense / moe / vl / vl_moe
 actor backend  = fsdp / megatron
 rollout        = sglang / vllm
@@ -46,15 +47,16 @@ run_qwen3_vl_fsdp_vllm.sh
 
 ## 当前模型
 
-| Family    | Variant | Actor                   | Rollout    | 默认资源 | env profile | 备注                               |
-| --------- | ------- | ----------------------- | ---------- | -------- | ----------- | ---------------------------------- |
-| `qwen2_5` | dense   | FSDP DP2 / Megatron TP2 | SGLang TP2 | 1×8 HCU  | qwen        | 文本 Dense                         |
-| `qwen3`   | dense   | FSDP DP4 / Megatron TP4 | SGLang TP4 | 1×8 HCU  | qwen        | Qwen3 Dense，不按参数量拆 launcher |
-| `qwen3`   | vl      | FSDP DP4                | SGLang TP4 | 1×8 HCU  | qwen        | Geometry3K 多模态                  |
-| `qwen3`   | moe     | Megatron TP/PP/EP       | SGLang TP8 | 2×8 HCU  | qwen        | MoE，独立拓扑                      |
-| `qwen3_5` | dense   | FSDP DP4 / Megatron TP4 | SGLang TP4 | 1×8 HCU  | qwen35      | Qwen3.5 Dense，fa3 + fp8 KV cache  |
-| `glm5`    | moe     | Megatron TP/EP          | SGLang TP8 | 2×8 HCU  | glm5        | MLA/DSA/custom                     |
-| `gemma3`  | vl      | FSDP DP4                | SGLang TP4 | 1×8 HCU  | gemma3      | 多模态，无 speculative/MTP 路径    |
+| Family     | Variant | Actor                       | Rollout    | 默认资源 | env profile | 备注                               |
+| ---------- | ------- | --------------------------- | ---------- | -------- | ----------- | ---------------------------------- |
+| `qwen2_5`  | dense   | FSDP DP2 / Megatron TP2     | SGLang TP2 | 1×8 HCU  | qwen        | 文本 Dense                         |
+| `qwen3`    | dense   | FSDP DP4 / Megatron TP4     | SGLang TP4 | 1×8 HCU  | qwen        | Qwen3 Dense，不按参数量拆 launcher |
+| `qwen3`    | vl      | FSDP DP4                    | SGLang TP4 | 1×8 HCU  | qwen        | Geometry3K 多模态                  |
+| `qwen3`    | moe     | Megatron TP/PP/EP           | SGLang TP8 | 2×8 HCU  | qwen        | MoE，独立拓扑                      |
+| `qwen3_5`  | dense   | FSDP DP4 / Megatron TP4     | SGLang TP4 | 1×8 HCU  | qwen35      | Qwen3.5 Dense，fa3 + fp8 KV cache  |
+| `glm5`     | moe     | Megatron TP/EP              | SGLang TP8 | 2×8 HCU  | glm5        | MLA/DSA/custom                     |
+| `gemma3`   | vl      | FSDP DP4                    | SGLang TP4 | 1×8 HCU  | gemma3      | 多模态，无 speculative/MTP 路径    |
+| `deepseek` | moe     | Megatron attn TP4 / ffn EP4 | SGLang TP4 | 2×8 HCU  | deepseek    | DeepSeek-R1，FP8 GEMM 用 triton    |
 
 同一个 Qwen3 Dense launcher 可以接收 Qwen3-1.7B 或 Qwen3-8B；具体权重由 `--model-path` 指定。`run.sh`
 不读取模型目录，权重与 launcher 是否匹配在训练加载阶段暴露。
@@ -126,8 +128,8 @@ glm5_4layers           -> glm5_moe_megatron_sglang
 ```
 
 `--profile` 仍然表示 Ray/AReaL 运行环境
-profile（`qwen`、`qwen35`、`glm5`、`gemma3`、`base`），不是模型规模。参数量只属于 `--model-path` 指向的模型目录，不属于
-launcher identity。
+profile（`qwen`、`qwen35`、`glm5`、`gemma3`、`deepseek`、`base`），不是模型规模。参数量只属于 `--model-path`
+指向的模型目录，不属于 launcher identity。
 
 ## 新增模型必须做的事情
 

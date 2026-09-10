@@ -35,7 +35,8 @@ ______________________________________________________________________
         ├── run_qwen3_5_dense_fsdp_sglang.sh
         ├── run_qwen3_5_dense_megatron_sglang.sh
         ├── run_glm5_moe_megatron_sglang.sh
-        └── run_gemma3_vl_fsdp_sglang.sh
+        ├── run_gemma3_vl_fsdp_sglang.sh
+        └── run_deepseekr1_moe_megatron_sglang.sh
 ```
 
 `run.sh` 会扫描 `run_*_<actor_backend>_<rollout_backend>.sh`，从 launcher 文件名和顶部的
@@ -109,16 +110,16 @@ ______________________________________________________________________
 
 AReaL 训练过程中会产生训练日志、Ray 协调信息、name-resolve 记录以及编译缓存。`common_env.sh` 将这些内容分开管理，主要变量如下。
 
-| 变量                 | 说明                                                      |
-| -------------------- | --------------------------------------------------------- |
-| `AREAL_RUNS_ROOT`    | 正式训练日志和实验输出根目录                              |
-| `AREAL_RUNTIME_ROOT` | 运行时协调目录                                            |
-| `AREAL_CACHE_ROOT`   | Torch/Triton 等缓存根目录                                 |
-| `FILER_ROOT`         | AReaL `cluster.fileroot`                                  |
-| `NAME_RESOLVE_ROOT`  | AReaL `cluster.name_resolve.nfs_record_root`              |
-| `LOG_ROOT`           | 日志根目录                                                |
-| `RAY_TMPDIR`         | Ray 临时目录，推荐使用节点本地 `/dev/shm`                 |
-| `AREAL_ENV_PROFILE`  | 模型环境 profile，例如 `qwen`、`qwen35`、`glm5`、`gemma3` |
+| 变量                 | 说明                                                                  |
+| -------------------- | --------------------------------------------------------------------- |
+| `AREAL_RUNS_ROOT`    | 正式训练日志和实验输出根目录                                          |
+| `AREAL_RUNTIME_ROOT` | 运行时协调目录                                                        |
+| `AREAL_CACHE_ROOT`   | Torch/Triton 等缓存根目录                                             |
+| `FILER_ROOT`         | AReaL `cluster.fileroot`                                              |
+| `NAME_RESOLVE_ROOT`  | AReaL `cluster.name_resolve.nfs_record_root`                          |
+| `LOG_ROOT`           | 日志根目录                                                            |
+| `RAY_TMPDIR`         | Ray 临时目录，推荐使用节点本地 `/dev/shm`                             |
+| `AREAL_ENV_PROFILE`  | 模型环境 profile，例如 `qwen`、`qwen35`、`glm5`、`gemma3`、`deepseek` |
 
 单节点时这些目录可以位于本地磁盘；多节点时 `FILER_ROOT` 和 `NAME_RESOLVE_ROOT` 必须在所有节点上可见。推荐显式设置一个共享目录，例如：
 
@@ -157,6 +158,7 @@ ______________________________________________________________________
 | `SGLANG_CHUNKED_PREFILL_SIZE`                 | chunked prefill 大小（所有当前 launcher）                                 |
 | `SGLANG_PAGE_SIZE`                            | KV cache page size（除 Qwen2.5 FSDP/Megatron 外）                         |
 | `SGLANG_ATTENTION_BACKEND`                    | SGLang attention backend（除 GLM-5 Megatron 外）                          |
+| `SGLANG_FP8_GEMM_BACKEND`                     | SGLang blockwise FP8 GEMM backend（仅 DeepSeek-R1，默认 `triton`）        |
 | `CLEAN_BEFORE_TRAIN`                          | 训练前是否清理本节点旧 AReaL/SGLang 进程                                  |
 
 ### SGLang override 适用范围
@@ -197,15 +199,16 @@ ______________________________________________________________________
 
 实际结果始终以 `bash run.sh --list` 为准，因为 `run.sh` 会扫描当前目录中真正存在的 launcher。
 
-| Family    | Variant | Preset            | FSDP2  | Megatron | 备注                            |
-| --------- | ------- | ----------------- | ------ | -------- | ------------------------------- |
-| `qwen2_5` | dense   | `0_5b`            | 支持   | 支持     | Dense                           |
-| `qwen3`   | dense   | `1_7b`            | 支持   | 支持     | Dense                           |
-| `qwen3`   | dense   | `8b`              | 支持   | 支持     | Dense，推荐作为 FSDP 验证模型   |
-| `qwen3`   | vl      | `4b`              | 支持   | 不提供   | 多模态 Geometry3K               |
-| `qwen3`   | moe     | `30b_a3b_4layers` | 不提供 | 支持     | MoE，使用 Megatron              |
-| `glm5`    | moe     | `4layers`         | 不提供 | 支持     | MoE/MLA/DSA                     |
-| `gemma3`  | vl      | -                 | 支持   | 不提供   | 多模态，env profile 为 `gemma3` |
+| Family     | Variant | Preset            | FSDP2  | Megatron | 备注                                                   |
+| ---------- | ------- | ----------------- | ------ | -------- | ------------------------------------------------------ |
+| `qwen2_5`  | dense   | `0_5b`            | 支持   | 支持     | Dense                                                  |
+| `qwen3`    | dense   | `1_7b`            | 支持   | 支持     | Dense                                                  |
+| `qwen3`    | dense   | `8b`              | 支持   | 支持     | Dense，推荐作为 FSDP 验证模型                          |
+| `qwen3`    | vl      | `4b`              | 支持   | 不提供   | 多模态 Geometry3K                                      |
+| `qwen3`    | moe     | `30b_a3b_4layers` | 不提供 | 支持     | MoE，使用 Megatron                                     |
+| `glm5`     | moe     | `4layers`         | 不提供 | 支持     | MoE/MLA/DSA                                            |
+| `gemma3`   | vl      | -                 | 支持   | 不提供   | 多模态，env profile 为 `gemma3`                        |
+| `deepseek` | moe     | -                 | 不提供 | 支持     | MoE/MLA，attn TP4 + ffn EP4，env profile 为 `deepseek` |
 
 `--model` 表示模型 family，`--variant` 区分 `dense`、`moe`、`vl` 和未来的 `vl_moe`，`--backend` 选择
 Actor 的 FSDP 或 Megatron，`--rollout` 选择 SGLang 或未来的 vLLM。训练时 `--variant` 为必填，`run.sh`
@@ -535,7 +538,7 @@ ______________________________________________________________________
 ```bash
 bash run.sh \
   --ray-head \
-  --profile=<qwen|qwen35|glm5|gemma3|base> \
+  --profile=<qwen|qwen35|glm5|gemma3|deepseek|base> \
   --head-ip=<HEAD_IP> \
   --ray-address=<HEAD_IP>:<RAY_PORT>
 ```
@@ -545,7 +548,7 @@ bash run.sh \
 ```bash
 bash run.sh \
   --ray-worker \
-  --profile=<qwen|qwen35|glm5|gemma3|base> \
+  --profile=<qwen|qwen35|glm5|gemma3|deepseek|base> \
   --ray-address=<HEAD_IP>:<RAY_PORT> \
   --worker-ip=<WORKER_IP>
 ```
@@ -555,7 +558,7 @@ bash run.sh \
 ```bash
 bash run.sh \
   --ray-status \
-  --profile=<qwen|qwen35|glm5|gemma3|base> \
+  --profile=<qwen|qwen35|glm5|gemma3|deepseek|base> \
   --ray-address=<HEAD_IP>:<RAY_PORT>
 ```
 
@@ -640,7 +643,7 @@ ______________________________________________________________________
 ```bash
 cd <AREAL_HOME>/hcu_example
 
-AREAL_ENV_PROFILE=<qwen|qwen35|glm5|gemma3|base> \
+AREAL_ENV_PROFILE=<qwen|qwen35|glm5|gemma3|deepseek|base> \
 bash scripts/check_env.sh
 ```
 
