@@ -35,7 +35,10 @@ DATASET_PATH="${DATASET_PATH:-openai/gsm8k}"
 # ==============================================================================
 # Cluster
 # ==============================================================================
-N_NODES="${N_NODES:-2}"
+# Actor (attn TP4 | ffn EP4) uses 4 HCUs and SGLang rollout uses 4, so the
+# default single-node budget of 8 HCUs is sufficient. Set N_NODES=2 only when
+# scaling the parallel layout beyond one node.
+N_NODES="${N_NODES:-1}"
 N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-8}"
 
 # Actor: attention d1/p1/t4, FFN d1/p1/t1/e4 (DeepSeek MoE)
