@@ -56,7 +56,7 @@ run_qwen3_vl_fsdp_vllm.sh
 | `qwen3_5`  | dense   | FSDP DP4 / Megatron TP4     | SGLang TP4 | 1×8 HCU  | qwen35      | Qwen3.5 Dense，fa3 + fp8 KV cache  |
 | `glm5`     | moe     | Megatron TP/EP              | SGLang TP8 | 2×8 HCU  | glm5        | MLA/DSA/custom                     |
 | `gemma3`   | vl      | FSDP DP4                    | SGLang TP4 | 1×8 HCU  | gemma3      | 多模态，无 speculative/MTP 路径    |
-| `deepseek` | moe     | Megatron attn TP4 / ffn EP4 | SGLang TP4 | 2×8 HCU  | deepseek    | DeepSeek-R1，FP8 GEMM 用 triton    |
+| `deepseek` | moe     | Megatron attn TP4 / ffn EP4 | SGLang TP4 | 1×8 HCU  | deepseek    | DeepSeek-R1，FP8 GEMM 用 triton    |
 
 同一个 Qwen3 Dense launcher 可以接收 Qwen3-1.7B 或 Qwen3-8B；具体权重由 `--model-path` 指定。`run.sh`
 不读取模型目录，权重与 launcher 是否匹配在训练加载阶段暴露。
