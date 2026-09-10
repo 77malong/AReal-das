@@ -22,12 +22,13 @@ run_qwen3_moe_megatron_sglang.sh
 run_qwen3_5_dense_fsdp_sglang.sh
 run_qwen3_5_dense_megatron_sglang.sh
 run_glm5_moe_megatron_sglang.sh
+run_gemma3_vl_fsdp_sglang.sh
 ```
 
 字段含义：
 
 ```text
-family         = qwen2_5 / qwen3 / qwen3_5 / glm5
+family         = qwen2_5 / qwen3 / qwen3_5 / glm5 / gemma3
 variant        = dense / moe / vl / vl_moe
 actor backend  = fsdp / megatron
 rollout        = sglang / vllm
@@ -53,6 +54,7 @@ run_qwen3_vl_fsdp_vllm.sh
 | `qwen3`   | moe     | Megatron TP/PP/EP       | SGLang TP8 | 2×8 HCU  | qwen        | MoE，独立拓扑                      |
 | `qwen3_5` | dense   | FSDP DP4 / Megatron TP4 | SGLang TP4 | 1×8 HCU  | qwen35      | Qwen3.5 Dense，fa3 + fp8 KV cache  |
 | `glm5`    | moe     | Megatron TP/EP          | SGLang TP8 | 2×8 HCU  | glm5        | MLA/DSA/custom                     |
+| `gemma3`  | vl      | FSDP DP4                | SGLang TP4 | 1×8 HCU  | gemma3      | 多模态，无 speculative/MTP 路径    |
 
 同一个 Qwen3 Dense launcher 可以接收 Qwen3-1.7B 或 Qwen3-8B；具体权重由 `--model-path` 指定。`run.sh`
 不读取模型目录，权重与 launcher 是否匹配在训练加载阶段暴露。
@@ -123,8 +125,9 @@ qwen3_30b_a3b_4layers  -> qwen3_moe_megatron_sglang
 glm5_4layers           -> glm5_moe_megatron_sglang
 ```
 
-`--profile` 仍然表示 Ray/AReaL 运行环境 profile（`qwen`、`qwen35`、`glm5`、`base`），不是模型规模。参数量只属于
-`--model-path` 指向的模型目录，不属于 launcher identity。
+`--profile` 仍然表示 Ray/AReaL 运行环境
+profile（`qwen`、`qwen35`、`glm5`、`gemma3`、`base`），不是模型规模。参数量只属于 `--model-path` 指向的模型目录，不属于
+launcher identity。
 
 ## 新增模型必须做的事情
 
