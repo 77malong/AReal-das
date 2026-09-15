@@ -17,7 +17,7 @@ export AREAL_ENV_PROFILE="${AREAL_ENV_PROFILE:-deepseek}"
 source "${SCRIPT_DIR}/common.sh"
 
 # ==============================================================================
-# AITER: explicitly disabled for DeepSeek on the DCU/ROCm path.
+# AITER: explicitly disabled for DeepSeek on the HCU path.
 # These default to ON on HIP, so we force them off here (redundant with the
 # deepseek profile in common_env.sh, kept here as a safety net).
 # ==============================================================================
@@ -42,7 +42,7 @@ N_NODES="${N_NODES:-1}"
 N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-8}"
 
 # Actor: attention d1/p1/t4, FFN d1/p1/t1/e4 (DeepSeek MoE)
-# Rollout: SGLang d1/p1/t4, DCU MLA attention backend
+# Rollout: SGLang d1/p1/t4, HCU MLA attention backend
 ACTOR_BACKEND="${ACTOR_BACKEND:-megatron:(attn:d1p1t4|ffn:d1p1t1e4)}"
 ROLLOUT_BACKEND="${ROLLOUT_BACKEND:-sglang:d1p1t4}"
 
@@ -54,7 +54,7 @@ WEIGHT_UPDATE_MODE="${WEIGHT_UPDATE_MODE:-xccl}"
 # Experiment
 # ==============================================================================
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-gsm8k-deepseek-r1-4layer-megatron-sglang}"
-TRIAL_NAME="${TRIAL_NAME:-tp8-dcu-mla-moe-smoke}"
+TRIAL_NAME="${TRIAL_NAME:-tp8-hcu-mla-moe-smoke}"
 TIMESTAMP="${TIMESTAMP:-$(date '+%Y%m%d-%H%M%S')}"
 LOG_DIR="${LOG_DIR:-${LOG_ROOT}/${EXPERIMENT_NAME}-${TRIAL_NAME}-${TIMESTAMP}}"
 LOG_FILE="${LOG_FILE:-${LOG_DIR}/train.log}"
@@ -85,7 +85,7 @@ SGLANG_CHUNKED_PREFILL_SIZE="${SGLANG_CHUNKED_PREFILL_SIZE:--1}"
 SGLANG_PAGE_SIZE="${SGLANG_PAGE_SIZE:-64}"
 SGLANG_KV_CACHE_DTYPE="${SGLANG_KV_CACHE_DTYPE:-fp8_e4m3}"
 SGLANG_MAX_RUNNING_REQUESTS="${SGLANG_MAX_RUNNING_REQUESTS:-256}"
-SGLANG_ATTENTION_BACKEND="${SGLANG_ATTENTION_BACKEND:-dcu_mla}"
+SGLANG_ATTENTION_BACKEND="${SGLANG_ATTENTION_BACKEND:-hcu_mla}"
 SGLANG_FP8_GEMM_BACKEND="${SGLANG_FP8_GEMM_BACKEND:-triton}"
 
 # ==============================================================================

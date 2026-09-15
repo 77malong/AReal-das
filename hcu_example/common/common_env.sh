@@ -253,7 +253,7 @@ case "${AREAL_ENV_PROFILE}" in
     ;;
   gemma3)
     # -----------------------------------------------------------------------
-    # Gemma3 DCU/HCU correctness profile
+    # Gemma3 HCU correctness profile
     # -----------------------------------------------------------------------
     # This profile intentionally mirrors start_sglang_gemma3.sh, which is the
     # known-working standalone inference baseline on this machine. These values
@@ -293,7 +293,7 @@ case "${AREAL_ENV_PROFILE}" in
     export TORCH_COMPILE_DISABLE=1
     export TORCHDYNAMO_DISABLE=1
 
-    # DCU / HIP runtime: exact values from start_sglang_gemma3.sh.
+    # HIP runtime: exact values from start_sglang_gemma3.sh.
     export GLIBC_TUNABLES='glibc.rtld.optional_static_tls=0x40000'
     export HIP_KERNEL_BATCH_CEILING=100
     export GPU_MAX_HW_QUEUES=4
@@ -308,8 +308,7 @@ case "${AREAL_ENV_PROFILE}" in
     export HIP_D2H_HSAAPI_COPY_THRESHOLD=512
 
     # Communication baseline. Keep the HCU alias in addition to the standalone
-    # USE_DCU_* name because AReaL/HCU helpers may read it.
-    export USE_DCU_CUSTOM_ALLREDUCE=1
+    # USE_HCU_* name because AReaL/HCU helpers may read it.
     export USE_HCU_CUSTOM_ALLREDUCE=1
     export NCCL_MAX_NCHANNELS=16
     export NCCL_MIN_NCHANNELS=16
@@ -341,13 +340,13 @@ case "${AREAL_ENV_PROFILE}" in
     export ALLREDUCE_STREAM_WITH_COMPUTE="${ALLREDUCE_STREAM_WITH_COMPUTE:-1}"
     ;;
   deepseek)
-    # DeepSeek-R1/V3: MLA + MoE path via DCU. AITER optimization is controlled
+    # DeepSeek-R1/V3: MLA + MoE path via HCU. AITER optimization is controlled
     # by env flags that default to ON on HIP/ROCm, so it is explicitly disabled
     # here for DeepSeek. SGLANG_USE_AITER remains the master switch.
     export SGLANG_USE_AITER="${SGLANG_USE_AITER:-0}"
     export SGLANG_USE_AITER_AR="${SGLANG_USE_AITER_AR:-0}"
     export SGLANG_ROCM_USE_AITER_MOE="${SGLANG_ROCM_USE_AITER_MOE:-0}"
-    # DeepSeek uses the speculative-v2 / My-scripts style DCU triton kernels.
+    # DeepSeek uses the speculative-v2 / My-scripts style HCU triton kernels.
     export SGLANG_ENABLE_SPEC_V2="${SGLANG_ENABLE_SPEC_V2:-1}"
     export SGLANG_CREATE_EXTEND_AFTER_DECODE_SPEC_INFO="${SGLANG_CREATE_EXTEND_AFTER_DECODE_SPEC_INFO:-1}"
     export SGLANG_ASSIGN_EXTEND_CACHE_LOCS="${SGLANG_ASSIGN_EXTEND_CACHE_LOCS:-1}"
@@ -355,7 +354,7 @@ case "${AREAL_ENV_PROFILE}" in
     export SGLANG_GET_LAST_LOC="${SGLANG_GET_LAST_LOC:-1}"
     export SGLANG_CREATE_FLASHMLA_KV_INDICES_TRITON="${SGLANG_CREATE_FLASHMLA_KV_INDICES_TRITON:-1}"
     export SGLANG_CREATE_CHUNKED_PREFIX_CACHE_KV_INDICES="${SGLANG_CREATE_CHUNKED_PREFIX_CACHE_KV_INDICES:-1}"
-    # DCU lightop / fused kernels used by the DeepSeek launcher.
+    # HCU lightop / fused kernels used by the DeepSeek launcher.
     export SGLANG_USE_LIGHTOP="${SGLANG_USE_LIGHTOP:-1}"
     export SGLANG_USE_OPT_CAT="${SGLANG_USE_OPT_CAT:-1}"
     export SGLANG_USE_FP8_W8A8_MOE="${SGLANG_USE_FP8_W8A8_MOE:-1}"
@@ -522,7 +521,7 @@ areal_save_env_snapshot() {
       AREAL_RUNS_ROOT AREAL_RUNTIME_ROOT AREAL_CACHE_ROOT FILER_ROOT NAME_RESOLVE_ROOT \
       TMPDIR XDG_CACHE_HOME TORCHINDUCTOR_CACHE_DIR TRITON_CACHE_DIR TORCH_EXTENSIONS_DIR \
       PYTORCH_ALLOC_CONF PYTORCH_CUDA_ALLOC_CONF \
-      USE_HCU_CUSTOM_ALLREDUCE USE_DCU_CUSTOM_ALLREDUCE SGL_CHUNKED_PREFIX_CACHE_THRESHOLD \
+      USE_HCU_CUSTOM_ALLREDUCE SGL_CHUNKED_PREFIX_CACHE_THRESHOLD \
       SGLANG_CHUNKED_PREFIX_CACHE_THRESHOLD SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT \
       SGLANG_SET_CPU_AFFINITY SGLANG_ENABLE_SPEC_V2 SGLANG_KVALLOC_KERNEL \
       SGLANG_CREATE_EXTEND_AFTER_DECODE_SPEC_INFO SGLANG_ASSIGN_EXTEND_CACHE_LOCS \
@@ -533,7 +532,7 @@ areal_save_env_snapshot() {
       HIP_H2D_DIRECT_COPY_THRESHOLD HIP_H2D_HSAAPI_COPY_THRESHOLD \
       HIP_D2H_DIRECT_COPY_THRESHOLD HIP_D2H_HSAAPI_COPY_THRESHOLD \
       TORCH_COMPILE_DISABLE TORCHDYNAMO_DISABLE HSA_KERNARG_POOL_SIZE ROC_AQL_QUEUE_SIZE \
-      GPU_MAX_HW_QUEUES HIP_KERNEL_BATCH_CEILING USE_DCU_CUSTOM_ALLREDUCE \
+      GPU_MAX_HW_QUEUES HIP_KERNEL_BATCH_CEILING \
       NCCL_MAX_NCHANNELS NCCL_MIN_NCHANNELS ALLREDUCE_STREAM_WITH_COMPUTE
     do
       printf '%s=%s\n' "${name}" "${!name-}"
@@ -564,7 +563,6 @@ areal_validate_ray_worker_env() {
   EXPECTED_ROC_AQL_QUEUE_SIZE="${ROC_AQL_QUEUE_SIZE:-}" \
   EXPECTED_GPU_MAX_HW_QUEUES="${GPU_MAX_HW_QUEUES:-}" \
   EXPECTED_HIP_KERNEL_BATCH_CEILING="${HIP_KERNEL_BATCH_CEILING:-}" \
-  EXPECTED_USE_DCU_CUSTOM_ALLREDUCE="${USE_DCU_CUSTOM_ALLREDUCE:-}" \
   EXPECTED_NCCL_MAX_NCHANNELS="${NCCL_MAX_NCHANNELS:-}" \
   EXPECTED_NCCL_MIN_NCHANNELS="${NCCL_MIN_NCHANNELS:-}" \
   EXPECTED_ALLREDUCE_STREAM_WITH_COMPUTE="${ALLREDUCE_STREAM_WITH_COMPUTE:-}" \
@@ -609,7 +607,6 @@ def probe():
                 "ROC_AQL_QUEUE_SIZE",
                 "GPU_MAX_HW_QUEUES",
                 "HIP_KERNEL_BATCH_CEILING",
-                "USE_DCU_CUSTOM_ALLREDUCE",
                 "NCCL_MAX_NCHANNELS",
                 "NCCL_MIN_NCHANNELS",
                 "ALLREDUCE_STREAM_WITH_COMPUTE",
@@ -650,7 +647,6 @@ expected_selected_env = {
     "ROC_AQL_QUEUE_SIZE": os.environ.get("EXPECTED_ROC_AQL_QUEUE_SIZE", ""),
     "GPU_MAX_HW_QUEUES": os.environ.get("EXPECTED_GPU_MAX_HW_QUEUES", ""),
     "HIP_KERNEL_BATCH_CEILING": os.environ.get("EXPECTED_HIP_KERNEL_BATCH_CEILING", ""),
-    "USE_DCU_CUSTOM_ALLREDUCE": os.environ.get("EXPECTED_USE_DCU_CUSTOM_ALLREDUCE", ""),
     "NCCL_MAX_NCHANNELS": os.environ.get("EXPECTED_NCCL_MAX_NCHANNELS", ""),
     "NCCL_MIN_NCHANNELS": os.environ.get("EXPECTED_NCCL_MIN_NCHANNELS", ""),
     "ALLREDUCE_STREAM_WITH_COMPUTE": os.environ.get("EXPECTED_ALLREDUCE_STREAM_WITH_COMPUTE", ""),
