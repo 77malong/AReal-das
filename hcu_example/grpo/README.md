@@ -29,8 +29,17 @@ bash run.sh --list
 运行：
 
 ```bash
-bash run.sh --model=<name> --model-path=<path-to-model> --ray-address=<head-node-ip>:6379
+bash run.sh \
+  --model=qwen3_8b \
+  --variant=dense \
+  --backend=megatron \
+  --rollout=sglang \
+  --model-path=<path-to-model> \
+  --ray-address=<head-node-ip>:6379
 ```
+
+`--variant` 校验所选模型架构，`--backend` 选择 Actor 后端，`--rollout` 选择 Rollout 后端。当前 Rollout 后端为
+`sglang`；历史的 `--model=<model>_<backend>_sglang` 写法仍然兼容。
 
 ## 参数职责
 
