@@ -133,6 +133,7 @@ jobs:
             -e SMOKE_DATASET_PATH=/workspace/AReaL-das/ci-runtime/math-smoke-dataset \
             -e RAY_TMPDIR=/dev/shm/ray-pr-model-smoke \
             -e TOTAL_TRAIN_STEPS=2 \
+            -e DISABLE_HF_SAVE=true \
             -e MAX_NEW_TOKENS=256 \
             -e N_SAMPLES=1 \
             -e SGLANG_MEM_FRACTION_STATIC=0.4 \
