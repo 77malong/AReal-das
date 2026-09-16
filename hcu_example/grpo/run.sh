@@ -18,11 +18,13 @@ Model/backend discovery:
   bash run.sh --list
   bash run.sh --search=qwen3
   bash run.sh --model=qwen3_8b --backends
-  bash run.sh --model=qwen3_8b --backend=fsdp --info
+  bash run.sh --model=qwen3_8b --variant=dense --backend=megatron \
+    --rollout=sglang --info
   bash run.sh --check-fsdp
 
 Training:
-  bash run.sh --model=qwen3_8b --backend=fsdp [options]
+  bash run.sh --model=qwen3_8b --variant=dense --backend=megatron \
+    --rollout=sglang [options]
   bash run.sh --model=qwen3_8b_fsdp_sglang [options]     # legacy alias
 
 Single-node Ray + training:
@@ -44,7 +46,9 @@ Multi-node Ray lifecycle (run on each physical node):
 Options:
   --model=<name>          Base model key, e.g. qwen3_8b.
                           Legacy <model>_<backend>_sglang names are also accepted.
+  --variant=<name>        Model variant. qwen3_8b uses dense.
   --backend=<name>        Actor backend: fsdp or megatron.
+  --rollout=<name>        Rollout backend. Currently supported: sglang.
   --list                  List discovered model keys and available actor backends.
   --search=<pattern>      Search model keys by substring.
   --backends              Show available backends for --model.
@@ -75,8 +79,18 @@ USAGE
 }
 
 script_for() {
-  local model="$1" backend="$2"
-  printf '%s/run_%s_%s_sglang.sh\n' "${SCRIPT_DIR}" "${model}" "${backend}"
+  local model="$1" backend="$2" rollout="${3:-sglang}"
+  printf '%s/run_%s_%s_%s.sh\n' \
+    "${SCRIPT_DIR}" "${model}" "${backend}" "${rollout}"
+}
+
+variant_for_model() {
+  case "$1" in
+    qwen2_5_0_5b|qwen3_1_7b|qwen3_5_2b|qwen3_8b) echo dense ;;
+    qwen3_vl_4b) echo multimodal ;;
+    qwen3_30b_a3b_4layers|glm5_4layers) echo moe ;;
+    *) echo unknown ;;
+  esac
 }
 
 backend_from_filename() {
@@ -249,8 +263,8 @@ fsdp_audit_one() {
 }
 
 backend_status() {
-  local model="$1" backend="$2" file adapter
-  file="$(script_for "${model}" "${backend}")"
+  local model="$1" backend="$2" rollout="${3:-sglang}" file adapter
+  file="$(script_for "${model}" "${backend}" "${rollout}")"
   [[ -f "${file}" ]] || { echo unsupported; return; }
   if ! bash -n "${file}" >/dev/null 2>&1; then
     echo invalid-shell
@@ -298,13 +312,15 @@ show_backends() {
 }
 
 show_info_one() {
-  local model="$1" backend="$2" file
-  file="$(script_for "${model}" "${backend}")"
+  local model="$1" backend="$2" rollout="${3:-sglang}" file
+  file="$(script_for "${model}" "${backend}" "${rollout}")"
   [[ -f "${file}" ]] || { echo "[ERROR] ${model} does not support backend ${backend} in this package." >&2; return 2; }
   echo "============================================================"
   echo "Model key:        ${model}"
+  echo "Variant:          $(variant_for_model "${model}")"
   echo "Backend:          ${backend}"
-  echo "Status:           $(backend_status "${model}" "${backend}")"
+  echo "Rollout:          ${rollout}"
+  echo "Status:           $(backend_status "${model}" "${backend}" "${rollout}")"
   echo "Script:           ${file}"
   echo "Profile:          $(extract_profile "${file}")"
   echo "Model path:       $(extract_default "${file}" MODEL_PATH)"
@@ -337,7 +353,9 @@ is_local_ip() {
 # CLI
 # -----------------------------------------------------------------------------
 MODEL=""
+VARIANT=""
 BACKEND=""
+ROLLOUT=""
 SEARCH=""
 RAY_ADDRESS_ARG=""
 WORKER_IP_ARG=""
@@ -356,7 +374,9 @@ RAY_ACTION=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model=*) MODEL="${1#*=}" ;;
+    --variant=*) VARIANT="${1#*=}" ;;
     --backend=*) BACKEND="${1#*=}" ;;
+    --rollout=*) ROLLOUT="${1#*=}" ;;
     --search=*) SEARCH="${1#*=}" ;;
     --list) DO_LIST=1 ;;
     --backends) DO_BACKENDS=1 ;;
@@ -390,7 +410,12 @@ if [[ "${MODEL}" == *_fsdp_sglang ]]; then
     echo "[ERROR] Legacy model alias implies fsdp but --backend=${BACKEND} was supplied." >&2
     exit 2
   fi
+  if [[ -n "${ROLLOUT}" && "${ROLLOUT}" != sglang ]]; then
+    echo "[ERROR] Legacy model alias implies sglang but --rollout=${ROLLOUT} was supplied." >&2
+    exit 2
+  fi
   BACKEND=fsdp
+  ROLLOUT=sglang
 elif [[ "${MODEL}" == *_megatron_sglang ]]; then
   legacy_backend=megatron
   MODEL="${MODEL%_megatron_sglang}"
@@ -398,7 +423,12 @@ elif [[ "${MODEL}" == *_megatron_sglang ]]; then
     echo "[ERROR] Legacy model alias implies megatron but --backend=${BACKEND} was supplied." >&2
     exit 2
   fi
+  if [[ -n "${ROLLOUT}" && "${ROLLOUT}" != sglang ]]; then
+    echo "[ERROR] Legacy model alias implies sglang but --rollout=${ROLLOUT} was supplied." >&2
+    exit 2
+  fi
   BACKEND=megatron
+  ROLLOUT=sglang
 fi
 
 if [[ "${DO_LIST}" == 1 ]]; then
@@ -439,6 +469,21 @@ if [[ -n "${MODEL}" ]] && ! model_exists "${MODEL}"; then
   exit 2
 fi
 
+if [[ -n "${MODEL}" ]]; then
+  resolved_variant="$(variant_for_model "${MODEL}")"
+  if [[ -n "${VARIANT}" && "${VARIANT}" != "${resolved_variant}" ]]; then
+    echo "[ERROR] Model ${MODEL} uses variant ${resolved_variant}, not ${VARIANT}." >&2
+    exit 2
+  fi
+  VARIANT="${VARIANT:-${resolved_variant}}"
+fi
+
+ROLLOUT="${ROLLOUT:-sglang}"
+if [[ "${ROLLOUT}" != sglang ]]; then
+  echo "[ERROR] Unsupported rollout backend: ${ROLLOUT}. Use sglang." >&2
+  exit 2
+fi
+
 if [[ "${DO_BACKENDS}" == 1 ]]; then
   [[ -n "${MODEL}" ]] || { echo "[ERROR] --backends requires --model=<name>." >&2; exit 2; }
   show_backends "${MODEL}"
@@ -448,10 +493,10 @@ fi
 if [[ "${DO_INFO}" == 1 ]]; then
   [[ -n "${MODEL}" ]] || { echo "[ERROR] --info requires --model=<name>." >&2; exit 2; }
   if [[ -n "${BACKEND}" ]]; then
-    show_info_one "${MODEL}" "${BACKEND}"
+    show_info_one "${MODEL}" "${BACKEND}" "${ROLLOUT}"
   else
     while IFS= read -r b; do
-      [[ -n "${b}" ]] && show_info_one "${MODEL}" "${b}"
+      [[ -n "${b}" ]] && show_info_one "${MODEL}" "${b}" "${ROLLOUT}"
     done < <(backends_for_model "${MODEL}")
   fi
   exit 0
@@ -476,9 +521,9 @@ fi
 
 SELECTED_SCRIPT=""
 if [[ -n "${MODEL}" && -n "${BACKEND}" ]]; then
-  SELECTED_SCRIPT="$(script_for "${MODEL}" "${BACKEND}")"
+  SELECTED_SCRIPT="$(script_for "${MODEL}" "${BACKEND}" "${ROLLOUT}")"
   [[ -f "${SELECTED_SCRIPT}" ]] || {
-    echo "[ERROR] ${MODEL} does not have backend ${BACKEND}." >&2
+    echo "[ERROR] ${MODEL}/${VARIANT} does not support ${BACKEND}/${ROLLOUT}." >&2
     show_backends "${MODEL}" >&2
     exit 2
   }
@@ -611,6 +656,23 @@ if [[ "${BACKEND}" == fsdp ]]; then
   fi
 fi
 
+if [[ "${DO_DRY_RUN}" == 1 ]]; then
+  echo "===== Dry run ====="
+  echo "model=${MODEL}"
+  echo "variant=${VARIANT}"
+  echo "backend=${BACKEND}"
+  echo "rollout=${ROLLOUT}"
+  echo "script=${SELECTED_SCRIPT}"
+  echo "profile=${AREAL_ENV_PROFILE}"
+  echo "nodes=${REQUESTED_N_NODES}"
+  echo "gpus_per_node=${REQUESTED_GPUS_PER_NODE}"
+  echo "ray_address=${RAY_ADDRESS:-auto}"
+  echo "restart_ray=${RESTART_RAY}"
+  echo "MODEL_PATH=${MODEL_PATH:-<script-default>}"
+  echo "TOKENIZER_PATH=${TOKENIZER_PATH:-<script-default>}"
+  exit 0
+fi
+
 if [[ "${RESTART_RAY}" == 1 ]]; then
   if [[ "${REQUESTED_N_NODES}" != 1 ]]; then
     echo "[ERROR] --restart-ray is single-node only; ${MODEL}/${BACKEND} requests N_NODES=${REQUESTED_N_NODES}." >&2
@@ -642,20 +704,6 @@ if [[ "${RESTART_RAY}" == 1 ]]; then
   echo "profile=${AREAL_ENV_PROFILE} address=${RAY_ADDRESS} gpus=${REQUESTED_GPUS_PER_NODE}"
   STOP_EXISTING_RAY=1 NUM_GPUS="${REQUESTED_GPUS_PER_NODE}" \
     bash "${EXAMPLE_ROOT}/scripts/start_ray.sh" "${RAY_HEAD_IP}"
-fi
-
-if [[ "${DO_DRY_RUN}" == 1 ]]; then
-  echo "===== Dry run ====="
-  echo "model=${MODEL}"
-  echo "backend=${BACKEND}"
-  echo "script=${SELECTED_SCRIPT}"
-  echo "profile=${AREAL_ENV_PROFILE}"
-  echo "nodes=${REQUESTED_N_NODES}"
-  echo "gpus_per_node=${REQUESTED_GPUS_PER_NODE}"
-  echo "ray_address=${RAY_ADDRESS:-auto}"
-  echo "MODEL_PATH=${MODEL_PATH:-<script-default>}"
-  echo "TOKENIZER_PATH=${TOKENIZER_PATH:-<script-default>}"
-  exit 0
 fi
 
 exec bash "${SELECTED_SCRIPT}"

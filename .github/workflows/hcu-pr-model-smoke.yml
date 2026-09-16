@@ -205,9 +205,12 @@ jobs:
           cd "${AREAL_HOME}/hcu_example/grpo"
           bash run.sh \
             --model=qwen3_8b \
-            --backend=fsdp \
+            --variant=dense \
+            --backend=megatron \
+            --rollout=sglang \
             --model-path="${MODEL_PATH}" \
             --tokenizer-path="${TOKENIZER_PATH}" \
+            --nodes=1 \
             --gpus-per-node=8 \
             --restart-ray
 
