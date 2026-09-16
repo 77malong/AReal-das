@@ -2,7 +2,7 @@
 
 本目录提供 AReaL在 HCU 环境下运行 GRPO 训练的示例脚本，训练侧支持 Megatron 和 PyTorch FSDP2，推理侧统一使用 SGLang。
 
----
+______________________________________________________________________
 
 ## 1. 目录结构
 
@@ -46,7 +46,7 @@ backend；不需要维护独立注册文件。参数量不写入 launcher 文件
 
 `run_qwen3_dense_fsdp_vllm.sh`。
 
----
+______________________________________________________________________
 
 ## 2. 运行前需要准备什么
 
@@ -67,7 +67,7 @@ Megatron-Bridge。多节点情况下，模型目录、实验输出目录以及 n
 <SHARED_RUNTIME_ROOT>      多节点共享运行目录
 ```
 
----
+______________________________________________________________________
 
 ## 3. `common_env.sh` 与源码路径
 
@@ -108,7 +108,7 @@ bash run.sh \
 | `SGLANG_HOME`                     | SGLang Python 源码目录，一般为 `<SGLANG_ROOT>/python`     |
 | `PYTHONPATH`                      | AReaL、Megatron、Megatron-Bridge 和 SGLang 的源码搜索路径 |
 
----
+______________________________________________________________________
 
 ## 4. AReaL 运行目录与重要环境变量
 
@@ -135,7 +135,7 @@ export NAME_RESOLVE_ROOT="${AREAL_RUNTIME_ROOT}/name_resolve"
 
 不要因为不同容器里都存在 `/workspace` 就默认它们是同一块存储。如果底层并非共享文件系统，多节点 name-resolve 和实验协调会出现异常。
 
----
+______________________________________________________________________
 
 ## 5. 模型脚本可覆盖的常用训练变量
 
@@ -209,7 +209,7 @@ bash run.sh \
 
 参数。命令行覆盖更适合临时测试，长期使用的模型默认值建议仍写在对应模型 launcher 中。
 
----
+______________________________________________________________________
 
 ## 6. 当前模型与后端
 
@@ -226,19 +226,26 @@ bash run.sh \
 | `gemma3`   | vl      | -                 | 支持   | 不提供   | 多模态，env profile 为 `gemma3`                        |
 | `deepseek` | moe     | -                 | 不提供 | 支持     | MoE/MLA，attn TP4 + ffn EP4，env profile 为 `deepseek` |
 
-`--model` 是 launcher selector，可以传模型 family（例如 `qwen3`），也可以传兼容的 legacy key。`--variant` 用于区分 `dense`、`moe`、`vl` 和未来的 `vl_moe`，`--backend` 选择 Actor 的 FSDP 或 Megatron，`--rollout` 选择 SGLang 或未来的 vLLM。
+`--model` 是 launcher selector，可以传模型 family（例如 `qwen3`），也可以传兼容的 legacy key。`--variant`
+用于区分 `dense`、`moe`、`vl` 和未来的 `vl_moe`，`--backend` 选择 Actor 的 FSDP 或 Megatron，`--rollout`
+选择 SGLang 或未来的 vLLM。
 
-正式训练、`--dry-run` 以及带 `--model` 的 `--ray-head` / `--ray-worker` / `--ray-status` 都要求显式提供 `--variant`。`--backends` 和 `--info` 是查询操作，可以省略 `--variant` 以查看该 family 下的全部匹配项。
+正式训练、`--dry-run` 以及带 `--model` 的 `--ray-head` / `--ray-worker` / `--ray-status` 都要求显式提供
+`--variant`。`--backends` 和 `--info` 是查询操作，可以省略 `--variant` 以查看该 family 下的全部匹配项。
 
-`run.sh` 不读取模型目录，也不会根据 checkpoint 内容推断 launcher；`--model-path` 只覆盖 launcher 使用的 `MODEL_PATH`。参数量不属于 launcher identity，由 `--model-path` 指向的模型决定。选择器无法唯一确定 launcher 时会报错并列出候选。
+`run.sh` 不读取模型目录，也不会根据 checkpoint 内容推断 launcher；`--model-path` 只覆盖 launcher 使用的
+`MODEL_PATH`。参数量不属于 launcher identity，由 `--model-path` 指向的模型决定。选择器无法唯一确定 launcher
+时会报错并列出候选。
 
-旧的 `qwen3_8b`、`qwen3_8b_fsdp_sglang` 等 legacy key 仍可被识别，但当前入口在带 `--model` 继续进入 launcher 解析时仍要求显式提供 `--variant`。完整 legacy alias 中的 backend 和 rollout 会从 alias 中解析；如果又显式传入与 alias 冲突的 `--backend` 或 `--rollout`，`run.sh` 会报错。
+旧的 `qwen3_8b`、`qwen3_8b_fsdp_sglang` 等 legacy key 仍可被识别，但当前入口在带 `--model` 继续进入 launcher
+解析时仍要求显式提供 `--variant`。完整 legacy alias 中的 backend 和 rollout 会从 alias 中解析；如果又显式传入与 alias
+冲突的 `--backend` 或 `--rollout`，`run.sh` 会报错。
 
 对于 Qwen3-30B-A3B 和 GLM-5，后续如果重新引入 PyTorch-native MoE 训练方案，应单独评估模型架构、expert 权重布局、HCU
 
 kernel 和 SGLang 在线权重更新，不建议恢复之前的 FSDP launcher 后直接用于正式训练。
 
----
+______________________________________________________________________
 
 # 7. `run.sh` 完整用法
 
@@ -295,9 +302,11 @@ bash run.sh \
   --backends
 ```
 
-`--backends` 用来查询当前 selector 下可用的 backend，因此查询时通常不要先指定 `--backend`。如果同一 family 下存在多个 variant，建议同时提供 `--variant` 缩小范围。
+`--backends` 用来查询当前 selector 下可用的 backend，因此查询时通常不要先指定 `--backend`。如果同一 family 下存在多个
+variant，建议同时提供 `--variant` 缩小范围。
 
-真正进入训练、`--dry-run` 或 model-aware Ray 操作时，只要 family、variant、backend、rollout 的组合仍匹配多个 launcher，`run.sh` 就会报歧义错误。正式训练建议显式填写 `--backend` 和 `--rollout`，便于日志和脚本复现。
+真正进入训练、`--dry-run` 或 model-aware Ray 操作时，只要 family、variant、backend、rollout 的组合仍匹配多个
+launcher，`run.sh` 就会报歧义错误。正式训练建议显式填写 `--backend` 和 `--rollout`，便于日志和脚本复现。
 
 ## 7.4 查看模型配置
 
@@ -372,9 +381,12 @@ bash run.sh \
   --ray-address=<HEAD_IP>:<RAY_PORT>
 ```
 
-`--nodes` 和 `--gpus-per-node` 分别覆盖 `N_NODES` 和 `N_GPUS_PER_NODE`，**不会自动修改** `ACTOR_BACKEND`、`ROLLOUT_BACKEND`、TP、PP、DP 或 EP。修改资源数量时必须确认模型脚本中的并行拓扑仍然能放进新的 GPU budget。
+`--nodes` 和 `--gpus-per-node` 分别覆盖 `N_NODES` 和 `N_GPUS_PER_NODE`，**不会自动修改**
+`ACTOR_BACKEND`、`ROLLOUT_BACKEND`、TP、PP、DP 或 EP。修改资源数量时必须确认模型脚本中的并行拓扑仍然能放进新的 GPU budget。
 
-对于 `--ray-head`、`--ray-worker` 和 `--restart-ray`，`--gpus-per-node` 还会影响当前节点启动 Ray 时注册的 GPU 数；对于带 `--model` 的 `--ray-status`，`--nodes` 和 `--gpus-per-node` 会用于计算期望节点数、总 GPU 数和每节点 GPU 数。
+对于 `--ray-head`、`--ray-worker` 和 `--restart-ray`，`--gpus-per-node` 还会影响当前节点启动 Ray 时注册的
+GPU 数；对于带 `--model` 的 `--ray-status`，`--nodes` 和 `--gpus-per-node` 会用于计算期望节点数、总 GPU
+数和每节点 GPU 数。
 
 ## 7.9 关闭训练前 cleanup
 
@@ -392,7 +404,7 @@ bash run.sh \
 
 一般不建议长期关闭 cleanup，因为上一次异常退出留下的 SGLang scheduler 或 model worker 可能继续占用 HCU 显存。
 
----
+______________________________________________________________________
 
 # 8. 单节点训练完整示例：Qwen3-8B FSDP
 
@@ -426,9 +438,12 @@ bash run.sh \
   --restart-ray
 ```
 
-`--restart-ray` 只适用于单节点任务。默认使用当前模型 launcher 对应的 `AREAL_ENV_PROFILE` 重启本机 Ray head，并让新的 Ray daemon/worker 继承对应的 Python、AReaL、Megatron 和 SGLang 环境。启动后 `run.sh` 会继续执行 Qwen3-8B FSDP launcher。
+`--restart-ray` 只适用于单节点任务。默认使用当前模型 launcher 对应的 `AREAL_ENV_PROFILE` 重启本机 Ray head，并让新的
+Ray daemon/worker 继承对应的 Python、AReaL、Megatron 和 SGLang 环境。启动后 `run.sh` 会继续执行 Qwen3-8B
+FSDP launcher。
 
-当前实现允许 `--profile` 与 `--model` 同时出现；此时 `--profile` 会覆盖 launcher metadata 中的 profile，并打印 warning。正常 model-aware 用法不建议额外传 `--profile`。
+当前实现允许 `--profile` 与 `--model` 同时出现；此时 `--profile` 会覆盖 launcher metadata 中的 profile，并打印
+warning。正常 model-aware 用法不建议额外传 `--profile`。
 
 如果 Ray 已经由其他命令正确启动，则不需要 `--restart-ray`，直接指定地址即可：
 
@@ -452,7 +467,7 @@ FSDP Data Parallel 对 batch 有额外约束。若 Actor 为 `fsdp:d4p1t1`，`TR
 bash run.sh --check-fsdp
 ```
 
----
+______________________________________________________________________
 
 # 9. 单节点训练：切换到 Megatron
 
@@ -472,7 +487,7 @@ bash run.sh \
 
 Megatron 的 Actor 并行、micro-batch、optimizer 和权重更新配置仍然保留在各自独立的模型脚本里。
 
----
+______________________________________________________________________
 
 # 10. 多节点训练完整示例：Qwen3-30B-A3B Megatron
 
@@ -513,7 +528,8 @@ bash run.sh \
   --worker-ip=<WORKER_IP>
 ```
 
-`--worker-ip` 是可选参数；省略时 `run.sh` 会自动使用当前节点探测到的 primary IP。若显式指定，则必须是当前 worker 节点自己的可通信 IP，`run.sh` 会检查该 IP 是否属于本机，避免误把其他节点地址作为 worker bind address。
+`--worker-ip` 是可选参数；省略时 `run.sh` 会自动使用当前节点探测到的 primary IP。若显式指定，则必须是当前 worker 节点自己的可通信
+IP，`run.sh` 会检查该 IP 是否属于本机，避免误把其他节点地址作为 worker bind address。
 
 如果需要第三个或更多 worker，在每个新增物理节点上重复 `--ray-worker` 操作即可。`run.sh` 不会通过 SSH 自动操作另一台服务器，所以
 
@@ -567,11 +583,12 @@ Head:   --ray-status
 Head:   正式训练
 ```
 
----
+______________________________________________________________________
 
 # 11. 不带模型时管理 Ray
 
-`run.sh` 的 Ray-only 模式可以通过 `--profile` 在没有 `--model` 时运行。该功能适合先建立通用 Ray 集群，再决定具体训练模型。`--profile` 的具体可用值应与当前环境配置保持一致；`run.sh` 本身不会在参数解析阶段对白名单做额外校验。
+`run.sh` 的 Ray-only 模式可以通过 `--profile` 在没有 `--model` 时运行。该功能适合先建立通用 Ray
+集群，再决定具体训练模型。`--profile` 的具体可用值应与当前环境配置保持一致；`run.sh` 本身不会在参数解析阶段对白名单做额外校验。
 
 启动 head：
 
@@ -606,9 +623,10 @@ bash run.sh \
 
 `--model=<FAMILY> --variant=<VARIANT> --backend=<fsdp|megatron> --rollout=<sglang|vllm>`，因为
 
-`run.sh` 可以直接从模型 launcher 解析环境 profile 和资源默认值。此时通常不要再传 `--profile`；按当前实现，如果同时传入，命令行 `--profile` 会覆盖 launcher profile。具体参数量由 `--model-path` 指向的模型配置决定。
+`run.sh` 可以直接从模型 launcher 解析环境 profile 和资源默认值。此时通常不要再传 `--profile`；按当前实现，如果同时传入，命令行
+`--profile` 会覆盖 launcher profile。具体参数量由 `--model-path` 指向的模型配置决定。
 
----
+______________________________________________________________________
 
 # 12. Ray 端口与网络要求
 
@@ -627,7 +645,7 @@ manager 和 node manager 的固定端口范围。
 
 多节点之间必须允许这些端口双向通信。容器环境还应确认 `--network=host` 或等价网络配置能够让节点之间直接访问 `<HEAD_IP>:<RAY_PORT>`。
 
----
+______________________________________________________________________
 
 # 13. 模型脚本中的 Actor / Rollout backend
 
@@ -657,7 +675,7 @@ Context Parallel。修改 `N_NODES` 并不会自动修改这些并行维度，�
 
 world size 和总 GPU budget。
 
----
+______________________________________________________________________
 
 # 14. 日志在哪里
 
@@ -680,7 +698,7 @@ Python 和源码路径，排查多节点环境不一致时非常重要。
 
 如果训练在 `grpo_prepare_run()` 之前就失败，完整错误可能只输出在终端，还没有机会写入 `train.log`。因此分析启动失败时要同时保留终端输出。
 
----
+______________________________________________________________________
 
 # 15. 环境检查
 
@@ -711,7 +729,7 @@ PY
 
 如果 Ray worker 的 import 路径和 driver 不一致，优先重新启动整个 Ray 集群，而不是只重新执行 training driver。
 
----
+______________________________________________________________________
 
 # 16. 常见问题
 
