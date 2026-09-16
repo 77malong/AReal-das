@@ -72,8 +72,30 @@ fi
 
 export MEGATRON_ROOT="${MEGATRON_HOME}"
 
-# Megatron repositories are stored under ${MEGATRON_HOME}/3rdparty.
-export MEGATRON_3RDPARTY_HOME="${MEGATRON_3RDPARTY_HOME:-${MEGATRON_HOME}/3rdparty}"
+# Support both Megatron repository layouts:
+#
+# New Megatron-LM-das layout:
+#   ${MEGATRON_HOME}/3rdparty/Megatron-LM
+#   ${MEGATRON_HOME}/3rdparty/Megatron-Bridge
+#   ${MEGATRON_HOME}/3rdparty/Megatron-Energon
+#
+# Legacy / CI image layout:
+#   ${MEGATRON_HOME}/Megatron-LM
+#   ${MEGATRON_HOME}/Megatron-Bridge
+#   ${MEGATRON_HOME}/Megatron-Energon
+#
+# An explicitly exported MEGATRON_3RDPARTY_HOME still takes precedence.
+if [[ -n "${MEGATRON_3RDPARTY_HOME:-}" ]]; then
+  :
+elif [[ -d "${MEGATRON_HOME}/3rdparty/Megatron-LM" ]]; then
+  export MEGATRON_3RDPARTY_HOME="${MEGATRON_HOME}/3rdparty"
+elif [[ -d "${MEGATRON_HOME}/Megatron-LM" ]]; then
+  export MEGATRON_3RDPARTY_HOME="${MEGATRON_HOME}"
+else
+  echo "[ERROR] Megatron-LM not found under ${MEGATRON_HOME}" >&2
+  return 1 2>/dev/null || exit 1
+fi
+
 export MEGATRON_LM_HOME="${MEGATRON_LM_HOME:-${MEGATRON_3RDPARTY_HOME}/Megatron-LM}"
 export MEGATRON_BRIDGE_HOME="${MEGATRON_BRIDGE_HOME:-${MEGATRON_3RDPARTY_HOME}/Megatron-Bridge}"
 export MEGATRON_ENERGON_HOME="${MEGATRON_ENERGON_HOME:-${MEGATRON_3RDPARTY_HOME}/Megatron-Energon}"
