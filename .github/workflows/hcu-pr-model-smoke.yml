@@ -66,8 +66,8 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
-          # Required to test the fork merge commit from this pull_request_target job.
+          ref: ${{ github.event_name == 'pull_request_target' && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+          # Required to test the fork merge ref from this pull_request_target job.
           allow-unsafe-pr-checkout: true
 
       - name: Verify HCU configuration and image
