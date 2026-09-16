@@ -746,6 +746,7 @@ if [[ "${DO_DRY_RUN}" == 1 ]]; then
   echo "nodes=${REQUESTED_N_NODES}"
   echo "gpus_per_node=${REQUESTED_GPUS_PER_NODE}"
   echo "ray_address=${RAY_ADDRESS:-auto}"
+  echo "restart_ray=${RESTART_RAY}"
   echo "MODEL_PATH=${MODEL_PATH:-<script-default>}"
   echo "TOKENIZER_PATH=${TOKENIZER_PATH:-<script-default>}"
   exit 0

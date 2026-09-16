@@ -33,6 +33,11 @@ TOTAL_TRAIN_EPOCHS="${TOTAL_TRAIN_EPOCHS:-1}"
 TOTAL_TRAIN_STEPS="${TOTAL_TRAIN_STEPS:-10}"
 ACTOR_LR="${ACTOR_LR:-1.7e-5}"
 ACTOR_MAX_TOKENS_PER_MB="${ACTOR_MAX_TOKENS_PER_MB:-10240}"
+
+# Saving a full HF checkpoint temporarily gathers tensor-parallel weights and
+# can exceed device memory. CI disables it; normal training keeps the YAML
+# saver configuration unchanged.
+DISABLE_HF_SAVE="${DISABLE_HF_SAVE:-false}"
 SGLANG_MEM_FRACTION_STATIC="${SGLANG_MEM_FRACTION_STATIC:-0.4}"
 SGLANG_CHUNKED_PREFILL_SIZE="${SGLANG_CHUNKED_PREFILL_SIZE:-65536}"
 SGLANG_PAGE_SIZE="${SGLANG_PAGE_SIZE:-64}"
@@ -84,6 +89,13 @@ SGLANG_CONFIG=(
 TRAINER_CONFIG=("total_train_epochs=${TOTAL_TRAIN_EPOCHS}")
 if [[ -n "${TOTAL_TRAIN_STEPS}" ]]; then
   TRAINER_CONFIG+=("++total_train_steps=${TOTAL_TRAIN_STEPS}")
+fi
+if [[ "${DISABLE_HF_SAVE}" == true ]]; then
+  TRAINER_CONFIG+=(
+    "saver.freq_epochs=null"
+    "saver.freq_steps=null"
+    "saver.freq_secs=null"
+  )
 fi
 
 grpo_prepare_run "${N_NODES}" "$((N_NODES * N_GPUS_PER_NODE))"

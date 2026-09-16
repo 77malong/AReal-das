@@ -66,8 +66,8 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
-          # Required to test the fork merge commit from this pull_request_target job.
+          ref: ${{ github.event_name == 'pull_request_target' && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+          # Required to test the fork merge ref from this pull_request_target job.
           allow-unsafe-pr-checkout: true
 
       - name: Verify HCU configuration and image
@@ -133,6 +133,7 @@ jobs:
             -e SMOKE_DATASET_PATH=/workspace/AReaL-das/ci-runtime/math-smoke-dataset \
             -e RAY_TMPDIR=/dev/shm/ray-pr-model-smoke \
             -e TOTAL_TRAIN_STEPS=2 \
+            -e DISABLE_HF_SAVE=true \
             -e MAX_NEW_TOKENS=256 \
             -e N_SAMPLES=1 \
             -e SGLANG_MEM_FRACTION_STATIC=0.4 \
@@ -205,9 +206,12 @@ jobs:
           cd "${AREAL_HOME}/hcu_example/grpo"
           bash run.sh \
             --model=qwen3_8b \
-            --backend=fsdp \
+            --variant=dense \
+            --backend=megatron \
+            --rollout=sglang \
             --model-path="${MODEL_PATH}" \
             --tokenizer-path="${TOKENIZER_PATH}" \
+            --nodes=1 \
             --gpus-per-node=8 \
             --restart-ray
 
