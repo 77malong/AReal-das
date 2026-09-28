@@ -80,6 +80,7 @@ class OpenAIProxyWorkflow(RolloutWorkflow):
         export_style: str = "individual",
         subproc_max_workers: int = 4,
         proxy_gateway_addr: str | None = None,
+        drop_retry_orphans: bool = False,
     ):
         if mode not in ("inline", "subproc", "online"):
             raise ValueError(
@@ -117,6 +118,7 @@ class OpenAIProxyWorkflow(RolloutWorkflow):
         self.discount = discount
         self.export_style = export_style
         self.subproc_max_workers = subproc_max_workers
+        self.drop_retry_orphans = drop_retry_orphans
 
     @trace_session("run_agent")
     async def _run_agent(self, session_api_key: str, data: dict):
@@ -164,7 +166,15 @@ class OpenAIProxyWorkflow(RolloutWorkflow):
     async def arun_episode(
         self, engine: TRolloutEngine, data: dict[str, Any]
     ) -> dict[str, InteractionWithTokenLogpReward] | None:
-        task_id = workflow_context.get().task_id
+        context = workflow_context.get()
+        task_id = context.task_id
+        # Qualify the proxy session with the group sample index so each group
+        # member owns a distinct, run-stable session namespace.
+        proxy_task_id = (
+            f"{task_id}:{context.sample_idx}"
+            if context.sample_idx is not None
+            else str(task_id)
+        )
 
         http_session = await workflow_context.get_aiohttp_session()
 
@@ -188,7 +198,7 @@ class OpenAIProxyWorkflow(RolloutWorkflow):
             proxy_client = OpenAIProxyClient(
                 session=http_session,
                 base_url=self.proxy_addr,
-                task_id=str(task_id),
+                task_id=proxy_task_id,
                 admin_api_key=self._admin_api_key,
             )
             proxy_client.session_id = session_info.session_id
@@ -196,6 +206,7 @@ class OpenAIProxyWorkflow(RolloutWorkflow):
             interactions = await proxy_client.export_interactions(
                 discount=self.discount,
                 style=self.export_style,
+                drop_retry_orphans=self.drop_retry_orphans,
             )
 
             # Return None if no interactions (empty session — user never sent chat/completions)
@@ -217,15 +228,20 @@ class OpenAIProxyWorkflow(RolloutWorkflow):
         proxy_client = OpenAIProxyClient(
             session=http_session,
             base_url=self.proxy_addr,
-            task_id=str(task_id),
+            task_id=proxy_task_id,
             admin_api_key=self._admin_api_key,
         )
         async with proxy_client:
             # Run the user code.
             try:
                 rewards = await self._run_agent(proxy_client.session_api_key, data)
-            except Exception:
-                logger.warning("Agent task failed. This trajectory will be rejected.")
+            except Exception as exc:
+                logger.warning(
+                    "Agent task failed (%s: %s). This trajectory will be rejected.",
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                )
                 raise
 
             # Assign rewards back according to user code output
@@ -241,6 +257,7 @@ class OpenAIProxyWorkflow(RolloutWorkflow):
         interactions = await proxy_client.export_interactions(
             discount=self.discount,
             style=self.export_style,
+            drop_retry_orphans=self.drop_retry_orphans,
         )
 
         # Record stats

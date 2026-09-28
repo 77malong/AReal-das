@@ -117,19 +117,7 @@ class VisionRLVRWorkflow(RLVRWorkflow):
         )
 
         input_ids: list[int] = processed_input["input_ids"].tolist()[0]
-        if "mm_token_type_ids" in processed_input:
-            # Qwen3-VL / Qwen2.5-VL
-            mm_token_type_ids: list[int] = processed_input[
-                "mm_token_type_ids"
-            ].tolist()[0]
-        elif "token_type_ids" in processed_input:
-            # Gemma3
-            mm_token_type_ids: list[int] = processed_input["token_type_ids"].tolist()[0]
-        else:
-            raise KeyError(
-                "Processor returned neither 'mm_token_type_ids' nor "
-                f"'token_type_ids'. Available keys: {list(processed_input.keys())}"
-            )
+        mm_token_type_ids: list[int] = processed_input["mm_token_type_ids"].tolist()[0]
 
         byte_images = image2base64(data["images"])
         req = ModelRequest(
@@ -155,6 +143,7 @@ class VisionRLVRWorkflow(RLVRWorkflow):
         logprobs = [0.0] * resp.input_len + resp.output_logprobs
         loss_mask = [0] * resp.input_len + [1] * resp.output_len
         versions = [-1] * resp.input_len + resp.output_versions
+        turn_ids = [-1] * resp.input_len + [0] * resp.output_len
 
         # Build multi-modal input
         multi_modal_input = [
@@ -174,6 +163,7 @@ class VisionRLVRWorkflow(RLVRWorkflow):
             "logprobs": torch.tensor(logprobs, dtype=torch.float32).unsqueeze(0),
             "multi_modal_input": multi_modal_input,
             "versions": torch.tensor(versions, dtype=torch.int32).unsqueeze(0),
+            "turn_ids": torch.tensor(turn_ids, dtype=torch.int32).unsqueeze(0),
             "attention_mask": torch.ones(len(seq), dtype=torch.bool).unsqueeze(0),
             "rewards": torch.tensor(reward, dtype=torch.float32).unsqueeze(0),
         }
