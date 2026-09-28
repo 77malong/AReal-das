@@ -4,10 +4,11 @@ import os
 import subprocess
 import sys
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import Future
 from typing import Any
 
+import torch
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 from areal.api import (
@@ -34,12 +35,25 @@ from areal.infra.platforms import current_platform
 from areal.infra.utils.launcher import TRITON_CACHE_PATH
 from areal.utils import logging, perf_tracer, stats_tracker
 from areal.utils.network import format_host_for_url
+from areal.utils.vllm_response import parse_vllm_generation_response
 
 logger = logging.getLogger("vLLMEngine")
 
 
 class VLLMBackend:
     """vLLM-specific backend implementation for remote inference."""
+
+    @staticmethod
+    def build_server_env(env: Mapping[str, str]) -> dict[str, str]:
+        _env = dict(env)
+        triton_cache_path = _env.get("TRITON_CACHE_PATH", TRITON_CACHE_PATH)
+        _env["TRITON_CACHE_PATH"] = os.path.join(triton_cache_path, str(uuid.uuid4()))
+
+        vllm_cache_path = _env.get("VLLM_CACHE_ROOT")
+        if vllm_cache_path:
+            _env["VLLM_CACHE_ROOT"] = os.path.join(vllm_cache_path, str(uuid.uuid4()))
+        _env["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
+        return _env
 
     def build_generation_request(
         self, req: ModelRequest, with_lora: bool, version: int
@@ -57,11 +71,16 @@ class VLLMBackend:
             "stop_token_ids": stop_token_ids,
             "ignore_eos": gconfig.ignore_eos,
             "skip_special_tokens": gconfig.skip_special_tokens,
+            "frequency_penalty": gconfig.frequency_penalty,
             "return_tokens_as_token_ids": True,
             "logprobs": 0,
             "use_beam_search": gconfig.use_beam_search,
             "stream": False,
         }
+        if gconfig.stop:
+            payload["stop"] = gconfig.stop
+        if gconfig.seed is not None:
+            payload["seed"] = gconfig.seed
 
         if with_lora:
             lora_name = gconfig.lora_name
@@ -99,32 +118,47 @@ class VLLMBackend:
         self, response: dict[str, Any]
     ) -> HttpGenerationResult:
         """Parse vLLM generation response."""
-        meta_info = response["choices"][0]
-        stop_reason = meta_info["finish_reason"]
+        return parse_vllm_generation_response(response)
 
-        # Parse tokens from "token:123" format
-        if "tokens" in meta_info["logprobs"]:
-            output_tokens = meta_info["logprobs"]["tokens"]
-            output_tokens = [int(t.split(":")[1]) for t in output_tokens]
-            output_logprobs = meta_info["logprobs"]["token_logprobs"]
-        elif "content" in meta_info["logprobs"]:
-            outputs = meta_info["logprobs"]["content"]
-            output_tokens = [int(t["token"].split(":")[1]) for t in outputs]
-            output_logprobs = [t["logprob"] for t in outputs]
-        else:
-            raise ValueError("Unexpected vLLM response format.")
-
-        if stop_reason == "abort" and len(output_tokens) == 0:
-            return HttpGenerationResult(
-                output_tokens=[],
-                output_logprobs=[],
-                stop_reason=stop_reason,
+    def build_score_request(
+        self, input_ids: list[int], target_len: int, with_lora: bool, version: int
+    ) -> HttpRequest:
+        payload: dict[str, Any] = {
+            "prompt": input_ids,
+            "max_tokens": 1,
+            "temperature": 0.0,
+            "logprobs": 1,
+            "prompt_logprobs": 1,
+            "echo": True,
+        }
+        if with_lora:
+            raise NotImplementedError(
+                "LoRA scoring request is not supported in vLLM teacher compute_logp yet."
             )
-        return HttpGenerationResult(
-            output_tokens=output_tokens,
-            output_logprobs=output_logprobs,
-            stop_reason=stop_reason,
-        )
+        return HttpRequest(endpoint="/v1/completions", payload=payload)
+
+    def parse_score_response(
+        self, response: dict[str, Any], target_len: int
+    ) -> list[float]:
+        choices = response.get("choices")
+        if not choices:
+            raise ValueError("vLLM response missing choices for score request")
+        prompt_logprobs = choices[0].get("prompt_logprobs")
+        if prompt_logprobs is None:
+            raise ValueError("vLLM response missing prompt_logprobs for score request")
+        if len(prompt_logprobs) < target_len + 1:
+            raise ValueError(
+                f"prompt_logprobs too short: got {len(prompt_logprobs)}, need {target_len + 1}"
+            )
+        sliced = prompt_logprobs[-target_len:]
+        token_logps: list[float] = []
+        for item in sliced:
+            if not item:
+                token_logps.append(0.0)
+                continue
+            top = next(iter(item.values()))
+            token_logps.append(float(top["logprob"] if isinstance(top, dict) else top))
+        return token_logps
 
     def build_disk_weight_update_requests(
         self, meta: WeightUpdateMeta
@@ -225,11 +259,20 @@ class VLLMBackend:
         """Get vLLM health check request."""
         return HttpRequest(endpoint="/health", payload={}, method="GET")
 
-    def get_offload_request(self) -> HttpRequest:
+    def get_abort_all_request(self) -> HttpRequest:
+        raise NotImplementedError("vLLM does not support abort_all_requests")
+
+    def get_offload_request(self, tags: list[str] | None = None) -> HttpRequest:
         """Get vLLM offload request.
 
         Uses vLLM's /sleep endpoint to offload model memory to CPU.
         Default level is 1.
+
+        Parameters
+        ----------
+        tags : list[str], optional
+            Accepted for RemoteInfEngine API compatibility. vLLM sleep does not
+            support component-specific tags, so this value is ignored.
         """
         return HttpRequest(endpoint="/sleep", payload={}, method="POST")
 
@@ -255,15 +298,7 @@ class VLLMBackend:
     def launch_server(self, server_args: dict[str, Any]) -> subprocess.Popen:
         """Launch vLLM server subprocess."""
         cmd = vLLMConfig.build_cmd_from_args(server_args)
-
-        _env = os.environ.copy()
-        triton_cache_path = _env.get("TRITON_CACHE_PATH", TRITON_CACHE_PATH)
-        _env["TRITON_CACHE_PATH"] = os.path.join(triton_cache_path, str(uuid.uuid4()))
-
-        vllm_cache_path = _env.get("VLLM_CACHE_ROOT")
-        if vllm_cache_path:
-            _env["VLLM_CACHE_ROOT"] = os.path.join(vllm_cache_path, str(uuid.uuid4()))
-        _env["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
+        _env = self.build_server_env(os.environ)
 
         logger.info(f"Launching vLLM server with command: {' '.join(cmd)}")
         return subprocess.Popen(
@@ -401,6 +436,8 @@ class RemotevLLMEngine(InferenceEngine):
         callback_addr: str | None = None,
         is_eval: bool = False,
         proxy_addr: str | None = None,
+        reward_normalization: bool = False,
+        drop_incomplete_group: bool = False,
     ) -> int:
         """Submit a request to the inference engine."""
         return self._engine.submit(
@@ -413,6 +450,8 @@ class RemotevLLMEngine(InferenceEngine):
             callback_addr=callback_addr,
             is_eval=is_eval,
             proxy_addr=proxy_addr,
+            reward_normalization=reward_normalization,
+            drop_incomplete_group=drop_incomplete_group,
         )
 
     def wait(
@@ -433,6 +472,8 @@ class RemotevLLMEngine(InferenceEngine):
         workflow: WorkflowLike,
         workflow_kwargs: dict[str, Any] | None = None,
         group_size: int = 1,
+        reward_normalization: bool = False,
+        drop_incomplete_group: bool = False,
     ) -> dict[str, Any]:
         """Submit a batch of requests and wait for results.
 
@@ -444,6 +485,8 @@ class RemotevLLMEngine(InferenceEngine):
             workflow=workflow,
             workflow_kwargs=workflow_kwargs,
             group_size=group_size,
+            reward_normalization=reward_normalization,
+            drop_incomplete_group=drop_incomplete_group,
         )
 
     def prepare_batch(
@@ -454,6 +497,8 @@ class RemotevLLMEngine(InferenceEngine):
         should_accept_fn: Callable[[dict[str, Any]], bool] | str | None = None,
         group_size: int = 1,
         dynamic_bs: bool = False,
+        reward_normalization: bool = False,
+        drop_incomplete_group: bool = False,
     ):
         """Asynchronously submit and wait until a full batch is ready."""
         return self._engine.prepare_batch(
@@ -463,7 +508,12 @@ class RemotevLLMEngine(InferenceEngine):
             should_accept_fn=should_accept_fn,
             group_size=group_size,
             dynamic_bs=dynamic_bs,
+            reward_normalization=reward_normalization,
+            drop_incomplete_group=drop_incomplete_group,
         )
+
+    def compute_logp(self, data: list[dict[str, Any]]) -> list[torch.Tensor]:
+        return self._engine.compute_logp(data)
 
     def pause(self):
         return self._engine.pause()
@@ -483,8 +533,8 @@ class RemotevLLMEngine(InferenceEngine):
     def teardown_server(self):
         return self._engine.teardown_server()
 
-    def offload(self):
-        return self._engine.offload()
+    def offload(self, tags: list[str] | None = None):
+        return self._engine.offload(tags=tags)
 
     def onload(self, tags: list[str] | None = None):
         return self._engine.onload(tags=tags)
@@ -493,22 +543,28 @@ class RemotevLLMEngine(InferenceEngine):
         return stats_tracker.export_all(reduce_group=None)
 
     @classmethod
-    def as_controller(
-        cls, config: InferenceEngineConfig, scheduler: Scheduler
-    ) -> RolloutController:
+    def as_controller(cls, config: InferenceEngineConfig, scheduler: Scheduler):
+        if config._version == "v2":
+            from areal.v2.inference_service.controller.controller import (
+                RolloutControllerV2,
+            )
+
+            return RolloutControllerV2(config=config, scheduler=scheduler)
         return RolloutController(cls, config=config, scheduler=scheduler)
 
-    def clear_batches(self, shard_ids: list[str]) -> None:
+    def clear_batches(self, shard_ids: list[str] | None = None) -> None:
         """Drain this worker's client-side RTensor fetch buffer.
 
         Called via RPC by ``TrainController.clear_batches`` at step end so
         cross-node consumer DP heads release cached tensors. See #1209.
-        Upstream ``TrainController.clear_batches`` guards against empty
-        input, so ``shard_ids`` is always a non-empty ``list[str]``.
+        Non-DP-head ranks receive no positional args via
+        ``_call_workers`` (see train_controller.py:575-577) — accept the
+        no-args call and noop, since their ``_fetch_buffer`` is empty.
         """
         from areal.infra.rpc.rtensor import clear_fetch_buffer
 
-        clear_fetch_buffer(shard_ids)
+        if shard_ids:
+            clear_fetch_buffer(shard_ids)
 
     def fetch_buffer_stats(self) -> dict[str, int]:
         """Expose local fetch-buffer stats for post-step drain verification."""

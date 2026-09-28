@@ -4,12 +4,13 @@ import os
 import subprocess
 import sys
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import Future
 from typing import Any
 
 import numpy as np
 import pybase64
+import torch
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 from areal.api import (
@@ -34,11 +35,21 @@ from areal.infra import RemoteInfEngine, RolloutController, WorkflowExecutor
 from areal.infra.platforms import current_platform
 from areal.infra.utils.launcher import TRITON_CACHE_PATH
 from areal.utils import perf_tracer, stats_tracker
+from areal.utils.logging import getLogger
 from areal.utils.network import format_host_for_url
+
+logger = getLogger("SGLangRemote")
 
 
 class SGLangBackend:
     """SGLang-specific backend implementation for remote inference."""
+
+    @staticmethod
+    def build_server_env(env: Mapping[str, str]) -> dict[str, str]:
+        _env = dict(env)
+        triton_cache_path = _env.get("TRITON_CACHE_PATH", TRITON_CACHE_PATH)
+        _env["TRITON_CACHE_PATH"] = os.path.join(triton_cache_path, str(uuid.uuid4()))
+        return _env
 
     def build_generation_request(
         self, req: ModelRequest, with_lora: bool, version: int
@@ -65,6 +76,8 @@ class SGLangBackend:
         }
         if stop:
             sample_params["stop"] = stop
+        if gconfig.seed is not None:
+            sample_params["sampling_seed"] = gconfig.seed
 
         payload = {
             "input_ids": req.input_ids.copy(),
@@ -126,6 +139,40 @@ class SGLangBackend:
             routed_experts=routed_experts,
         )
 
+    def build_score_request(
+        self, input_ids: list[int], target_len: int, with_lora: bool, version: int
+    ) -> HttpRequest:
+        payload: dict[str, Any] = {
+            "input_ids": input_ids,
+            "sampling_params": {
+                "max_new_tokens": 1,
+                "temperature": 0.0,
+            },
+            "return_logprob": True,
+            "logprob_start_len": max(0, len(input_ids) - target_len - 1),
+            "top_logprobs_num": 0,
+            "stream": False,
+        }
+        if with_lora:
+            raise NotImplementedError(
+                "LoRA scoring request is not supported in SGLang teacher compute_logp yet."
+            )
+        return HttpRequest(endpoint="/generate", payload=payload)
+
+    def parse_score_response(
+        self, response: dict[str, Any], target_len: int
+    ) -> list[float]:
+        meta_info = response.get("meta_info")
+        if meta_info is None:
+            raise ValueError("SGLang response missing meta_info for score request")
+        # SGLang returns [logprob, token_id, ...]
+        all_logprobs = [float(x[0]) for x in meta_info.get("input_token_logprobs", [])]
+        if len(all_logprobs) < target_len:
+            raise ValueError(
+                f"SGLang returned insufficient input_token_logprobs: {len(all_logprobs)} < {target_len}"
+            )
+        return all_logprobs[-target_len:]
+
     def build_disk_weight_update_requests(
         self, meta: WeightUpdateMeta
     ) -> WeightUpdateRequests:
@@ -136,13 +183,32 @@ class SGLangBackend:
             if meta.version is None:
                 raise ValueError("Version is required for LoRA update.")
             lora_name = get_versioned_lora_name(meta.lora_name, meta.version)
-            # Load new LoRA
+            # Load new LoRA (best_effort: if already registered, SGLang
+            # returns 400 which is silently ignored).
             requests = [
                 HttpRequest(
                     endpoint="/load_lora_adapter",
                     payload={"lora_name": lora_name, "lora_path": str(meta.path)},
-                )
+                    best_effort=True,
+                ),
             ]
+            # Unload the version that has fallen outside the retention window so
+            # sglang does not accumulate one adapter per train step (which leaks
+            # VRAM and eventually hangs). Kept versions cover off-policy rollouts
+            # (max_head_offpolicyness). Best-effort: the stale adapter may have
+            # already been evicted or never loaded.
+            keep = meta.lora_keep_versions
+            if keep > 0 and meta.version - keep >= 0:
+                stale_name = get_versioned_lora_name(
+                    meta.lora_name, meta.version - keep
+                )
+                requests.append(
+                    HttpRequest(
+                        endpoint="/unload_lora_adapter",
+                        payload={"lora_name": stale_name},
+                        best_effort=True,
+                    )
+                )
             return WeightUpdateRequests(requests=requests)
         else:
             # Full model update
@@ -189,39 +255,130 @@ class SGLangBackend:
     def build_init_weights_group_request(
         self, addr: str, server_idx: int, meta: WeightUpdateMeta
     ) -> HttpRequest:
-        """Build SGLang init weights group request."""
+        """Build SGLang init weights group request.
+
+        Supports two scenarios:
+
+        1. **PP=1** (original): Single NCCL group spanning all TP workers across
+           all DP instances. ``rank_offset`` is based on ``tp_size``.
+
+        2. **PP>1, per-PP-rank groups**: The training engine creates a separate
+           NCCL group per PP stage. The group name encodes the PP rank
+           (e.g., ``update_weight_group_0``). Only sglang workers at that PP
+           rank participate, so ``rank_offset`` is based on ``tp_size`` only,
+           ``world_size = n_servers * tp_size + 1``, and ``pp_rank`` is
+           included in the payload.
+
+        All three training engines (Megatron, FSDP, Archon) use per-PP-rank
+        group naming (``update_weight_group_{pp_rank}``) when PP>1, so the
+        per-PP-rank path is always taken for PP>1.
+        """
         assert meta.gen_allocation is not None
         gen_parallel = meta.gen_allocation.parallel
-        if gen_parallel.pp_size != 1:
-            raise NotImplementedError(
-                "NCCL weight update with PP size > 1 is not implemented yet."
-            )
-        rank_offset = 1 + server_idx * gen_parallel.tp_size
-        payload = {
-            "master_address": format_host_for_url(meta.nccl_master_address),
-            "master_port": str(meta.nccl_master_port),
-            "rank_offset": rank_offset,
-            "world_size": gen_parallel.world_size + 1,
-            "backend": current_platform.communication_backend,
-            "group_name": meta.nccl_group_name,
-        }
+        group_name = meta.nccl_group_name
+
+        # Determine if training side uses per-PP-rank groups.
+        # Per-PP-rank groups are identified by group names ending with _{digit}
+        # and pp_size > 1. All engines use this pattern when PP>1.
+        per_pp_groups = False
+        if gen_parallel.pp_size > 1:
+            try:
+                _suffix = group_name.rsplit("_", 1)[-1]
+                int(_suffix)
+                per_pp_groups = True
+            except (ValueError, IndexError):
+                per_pp_groups = False
+
+        if per_pp_groups:
+            # Scenario 2: PP>1 with per-PP-rank groups.
+            # Extract pp_rank from the group name suffix.
+            pp_rank = int(group_name.rsplit("_", 1)[-1])
+
+            tp_size = gen_parallel.tp_size
+            pp_size = gen_parallel.pp_size
+            # gen_parallel.world_size = dp_size * tp_size * pp_size on the
+            # inference side. n_servers (number of sglang server replicas)
+            # therefore equals dp_size whether or not DP-attention is
+            # configured: the AReaL allocation always materialises one server
+            # replica per DP shard, each running ``tp_size * pp_size`` workers.
+            n_servers = gen_parallel.world_size // (tp_size * pp_size)
+
+            # Each server contributes exactly ``tp_size`` workers per PP stage.
+            # Across all replicas this PP stage has ``n_servers * tp_size``
+            # inference workers (= dp_size * tp_size), all of which join the
+            # per-PP NCCL group together with the trainer.
+            rank_offset = 1 + server_idx * tp_size
+
+            # world_size for this group: TP workers across all DP replicas at
+            # this PP rank + 1 (trainer).
+            world_size = n_servers * tp_size + 1
+
+            payload = {
+                "master_address": format_host_for_url(meta.nccl_master_address),
+                "master_port": str(meta.nccl_master_port),
+                "rank_offset": rank_offset,
+                "world_size": world_size,
+                "backend": current_platform.communication_backend,
+                "group_name": group_name,
+                "pp_rank": pp_rank,
+            }
+        else:
+            instance_size = gen_parallel.tp_size * gen_parallel.pp_size
+            rank_offset = 1 + server_idx * instance_size
+            payload = {
+                "master_address": format_host_for_url(meta.nccl_master_address),
+                "master_port": str(meta.nccl_master_port),
+                "rank_offset": rank_offset,
+                "world_size": gen_parallel.world_size + 1,
+                "backend": current_platform.communication_backend,
+                "group_name": group_name,
+            }
+
         return HttpRequest(endpoint="/init_weights_update_group", payload=payload)
 
-    def get_pause_request(self) -> HttpRequest:
+    def get_pause_request(self, mode: str | None = None) -> HttpRequest:
         """Get SGLang pause request."""
-        return HttpRequest(endpoint="/pause_generation", payload={})
+        payload = {} if mode is None else {"mode": mode}
+        return HttpRequest(endpoint="/pause_generation", payload=payload)
+
+    def get_pause_requests(self) -> list[HttpRequest]:
+        """Pause in two steps so memory can be released safely.
+
+        The first request keeps SGLang's default mode, which aborts in-flight
+        requests and returns their partial output so the client resumes them by
+        extending the prompt. That also leaves the scheduler fully idle, which
+        SGLang requires before releasing memory.
+
+        The second request looks redundant because Scheduler.pause_generation
+        sets its paused flag unconditionally, but the abort path never reaches
+        the scheduler: TokenizerManager forwards the request only for non-abort
+        modes, and otherwise just drains via abort_request(). Abort therefore
+        raises the tokenizer's own gate while the scheduler keeps scheduling.
+        Only an in-place pause raises the scheduler flag that the colocate loop
+        watches before it services awex work, and by then the abort has already
+        left nothing for that mode to retain.
+        """
+        return [
+            self.get_pause_request(),
+            self.get_pause_request(mode="in_place"),
+        ]
 
     def get_resume_request(self) -> HttpRequest:
         """Get SGLang resume request."""
         return HttpRequest(endpoint="/continue_generation", payload={})
 
+    def get_abort_all_request(self) -> HttpRequest:
+        """Get SGLang abort all requests."""
+        return HttpRequest(endpoint="/abort_request", payload={"abort_all": True})
+
     def get_health_check_request(self) -> HttpRequest:
         """Get SGLang health check request."""
         return HttpRequest(endpoint="/health", payload={}, method="GET")
 
-    def get_offload_request(self) -> HttpRequest:
+    def get_offload_request(self, tags: list[str] | None = None) -> HttpRequest:
         """Get SGLang offload request."""
-        return HttpRequest(endpoint="/release_memory_occupation", payload={})
+        payload = {"tags": tags} if tags is not None else {}
+        return HttpRequest(endpoint="/release_memory_occupation", payload=payload)
 
     def get_onload_request(self, tags: list[str] | None = None) -> HttpRequest:
         """Get SGLang onload request.
@@ -236,10 +393,47 @@ class SGLangBackend:
 
     def launch_server(self, server_args: dict[str, Any]) -> subprocess.Popen:
         """Launch SGLang server subprocess."""
+        awex_meta_addr = server_args.pop("awex_meta_server_addr", None)
+        awex_colocate = server_args.pop("awex_colocate_mode", False)
+        # Colocate placement: derive base_gpu_id from SLURM_LOCALID so two SGLang
+        # servers sharing a node never claim the same GPU range. The controller
+        # cannot do this reliably because its global rank -> node-slot mapping is
+        # not guaranteed by SLURM task dispatch (a collision degrades the
+        # TP group into an unsharded single-GPU load -> OOM). SLURM_LOCALID is the
+        # only id guaranteed unique per node-slot, and only the worker sees it at
+        # runtime. `_awex_gpus_per_server` is injected by the controller exclusively
+        # for real colocation, so its presence doubles as the colocate gate; it is
+        # absent for separated mode (where CVD isolation keeps base_gpu_id at 0).
+        awex_gpus_per_server = server_args.pop("_awex_gpus_per_server", None)
+        if awex_gpus_per_server is not None:
+            slurm_localid = os.environ.get("SLURM_LOCALID")
+            if slurm_localid is not None:
+                base_gpu_id = int(slurm_localid) * int(awex_gpus_per_server)
+                server_args["base_gpu_id"] = base_gpu_id
+                logger.info(
+                    "AWEX colocate base_gpu_id override: SLURM_LOCALID=%s x "
+                    "gpus_per_server=%s -> base_gpu_id=%s",
+                    slurm_localid,
+                    awex_gpus_per_server,
+                    base_gpu_id,
+                )
         cmd = SGLangConfig.build_cmd_from_args(server_args)
-        _env = os.environ.copy()
-        triton_cache_path = _env.get("TRITON_CACHE_PATH", TRITON_CACHE_PATH)
-        _env["TRITON_CACHE_PATH"] = os.path.join(triton_cache_path, str(uuid.uuid4()))
+        _env = self.build_server_env(os.environ)
+
+        if not awex_meta_addr:
+            awex_meta_addr = os.environ.get("AWEX_META_SERVER_ADDR")
+        if awex_colocate or awex_meta_addr:
+            sglang_entrypoints = (
+                "sglang.launch_server",
+                "areal.v2.inference_service.sglang.launch_server",
+            )
+            cmd = [
+                "areal.engine.awex.sglang_plugin" if c in sglang_entrypoints else c
+                for c in cmd
+            ]
+            if awex_meta_addr:
+                _env["AWEX_META_SERVER_ADDR"] = awex_meta_addr
+            logger.info("AWEX mode: using awex_sglang_plugin entry, cmd=%s", cmd[:4])
 
         return subprocess.Popen(
             cmd,
@@ -375,6 +569,8 @@ class RemoteSGLangEngine(InferenceEngine):
         callback_addr: str | None = None,
         is_eval: bool = False,
         proxy_addr: str | None = None,
+        reward_normalization: bool = False,
+        drop_incomplete_group: bool = False,
     ) -> int:
         """Submit a request to the inference engine."""
         return self._engine.submit(
@@ -387,6 +583,8 @@ class RemoteSGLangEngine(InferenceEngine):
             callback_addr=callback_addr,
             is_eval=is_eval,
             proxy_addr=proxy_addr,
+            reward_normalization=reward_normalization,
+            drop_incomplete_group=drop_incomplete_group,
         )
 
     def wait(
@@ -407,6 +605,8 @@ class RemoteSGLangEngine(InferenceEngine):
         workflow: WorkflowLike,
         workflow_kwargs: dict[str, Any] | None = None,
         group_size: int = 1,
+        reward_normalization: bool = False,
+        drop_incomplete_group: bool = False,
     ) -> dict[str, Any]:
         """Submit a batch of requests and wait for results.
 
@@ -418,6 +618,8 @@ class RemoteSGLangEngine(InferenceEngine):
             workflow=workflow,
             workflow_kwargs=workflow_kwargs,
             group_size=group_size,
+            reward_normalization=reward_normalization,
+            drop_incomplete_group=drop_incomplete_group,
         )
 
     def prepare_batch(
@@ -428,6 +630,8 @@ class RemoteSGLangEngine(InferenceEngine):
         should_accept_fn: Callable[[dict[str, Any]], bool] | str | None = None,
         group_size: int = 1,
         dynamic_bs: bool = False,
+        reward_normalization: bool = False,
+        drop_incomplete_group: bool = False,
     ):
         """Asynchronously submit and wait until a full batch is ready."""
         return self._engine.prepare_batch(
@@ -437,7 +641,12 @@ class RemoteSGLangEngine(InferenceEngine):
             should_accept_fn=should_accept_fn,
             group_size=group_size,
             dynamic_bs=dynamic_bs,
+            reward_normalization=reward_normalization,
+            drop_incomplete_group=drop_incomplete_group,
         )
+
+    def compute_logp(self, data: list[dict[str, Any]]) -> list[torch.Tensor]:
+        return self._engine.compute_logp(data)
 
     def pause(self):
         return self._engine.pause()
@@ -457,8 +666,14 @@ class RemoteSGLangEngine(InferenceEngine):
     def teardown_server(self):
         return self._engine.teardown_server()
 
-    def offload(self):
-        return self._engine.offload()
+    def offload(self, tags: list[str] | None = None):
+        logger.info("RemoteSGLangEngine.offload(tags=%s) called", tags)
+        result = self._engine.offload(tags=tags)
+        logger.info("RemoteSGLangEngine.offload(tags=%s) done", tags)
+        return result
+
+    def abort_all_requests(self):
+        return self._engine.abort_all_requests()
 
     def onload(self, tags: list[str] | None = None):
         return self._engine.onload(tags=tags)
@@ -467,22 +682,28 @@ class RemoteSGLangEngine(InferenceEngine):
         return stats_tracker.export_all(reduce_group=None)
 
     @classmethod
-    def as_controller(
-        cls, config: InferenceEngineConfig, scheduler: Scheduler
-    ) -> RolloutController:
+    def as_controller(cls, config: InferenceEngineConfig, scheduler: Scheduler):
+        if config._version == "v2":
+            from areal.v2.inference_service.controller.controller import (
+                RolloutControllerV2,
+            )
+
+            return RolloutControllerV2(config=config, scheduler=scheduler)
         return RolloutController(cls, config=config, scheduler=scheduler)
 
-    def clear_batches(self, shard_ids: list[str]) -> None:
+    def clear_batches(self, shard_ids: list[str] | None = None) -> None:
         """Drain this worker's client-side RTensor fetch buffer.
 
         Called via RPC by ``TrainController.clear_batches`` at step end so
         cross-node consumer DP heads release cached tensors. See #1209.
-        Upstream ``TrainController.clear_batches`` guards against empty
-        input, so ``shard_ids`` is always a non-empty ``list[str]``.
+        Non-DP-head ranks receive no positional args via
+        ``_call_workers`` (see train_controller.py:575-577) — accept the
+        no-args call and noop, since their ``_fetch_buffer`` is empty.
         """
         from areal.infra.rpc.rtensor import clear_fetch_buffer
 
-        clear_fetch_buffer(shard_ids)
+        if shard_ids:
+            clear_fetch_buffer(shard_ids)
 
     def fetch_buffer_stats(self) -> dict[str, int]:
         """Expose local fetch-buffer stats for post-step drain verification."""
