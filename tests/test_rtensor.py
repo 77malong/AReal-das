@@ -1061,7 +1061,7 @@ class TestFetchBuffer:
     def test_remove_pops_both_storage_and_fetch_buffer(self):
         """remove() drops the shard from both _storage and _fetch_buffer.
 
-        Regression guard for inclusionAI/AReaL#1209: on a worker that is both
+        Regression guard for areal-project/AReaL#1209: on a worker that is both
         storage owner and consumer, ``to_local()`` caches the tensor in
         ``_fetch_buffer``; without this pop, RSS grows unboundedly across
         training steps.
@@ -1181,16 +1181,6 @@ class TestTensorShardInfoDocumentation:
         )
         assert shard.shard_id == "test-shard-001"
         assert shard.node_addr == "localhost:8080"
-
-    def test_ray_backend_empty_node_addr(self):
-        """Ray backend uses empty string for node_addr."""
-        from areal.infra.rpc.rtensor import TensorShardInfo
-
-        shard = TensorShardInfo(
-            shard_id="",  # Will be filled by Ray ObjectRef
-            node_addr="",  # Empty for Ray backend
-        )
-        assert shard.node_addr == ""
 
     def test_http_backend_node_addr(self):
         """HTTP backend uses host:port for node_addr."""

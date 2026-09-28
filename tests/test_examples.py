@@ -163,7 +163,8 @@ def test_countdown_example(tmp_path_factory):
 @pytest.mark.sglang
 @pytest.mark.multi_gpu
 @pytest.mark.ci
-def test_gsm8k_grpo(tmp_path_factory):
+@pytest.mark.parametrize("_version", ["v1", "v2"])
+def test_gsm8k_grpo(tmp_path_factory, _version, monkeypatch):
     experiments_path = tmp_path_factory.mktemp("experiments")
     name_resolve_path = tmp_path_factory.mktemp("name_resolve")
     model_path = get_model_path(
@@ -173,6 +174,10 @@ def test_gsm8k_grpo(tmp_path_factory):
 
     example_file = "examples/math/gsm8k_rl.py"
     config_name = "examples/math/gsm8k_grpo.yaml"
+
+    # Allow the proxy rollout server to start with the default admin API key
+    # when bound to the runner's non-loopback IP (CI is a trusted environment).
+    monkeypatch.setenv("AREAL_ALLOW_DEFAULT_ADMIN_KEY", "1")
 
     success = run_async_task(
         run_example,
@@ -192,9 +197,11 @@ def test_gsm8k_grpo(tmp_path_factory):
         f"cluster.name_resolve.nfs_record_root={str(name_resolve_path)}",
         f"actor.path={model_path}",
         "scheduler.type=local",
+        f"+actor._version={_version}",
+        f"+rollout._version={_version}",
         timeout=900,
     )
-    assert success, "GSM8K GRPO example failed"
+    assert success, f"GSM8K GRPO example failed (_version={_version})"
 
 
 @pytest.mark.parametrize(
@@ -299,6 +306,7 @@ def test_vlm_grpo(tmp_path_factory, rollout_backend, actor_backend):
         "gconfig.n_samples=2",
         "gconfig.max_new_tokens=256",
         "actor.mb_spec.max_tokens_per_mb=1024",
+        "+actor.optimizer_dtype=bfloat16",
         "train_dataset.batch_size=2",
         "valid_dataset.batch_size=2",
         f"train_dataset.path={dataset_path}",
@@ -431,6 +439,55 @@ def test_gsm8k_ppo_colocate(tmp_path_factory):
     assert success, "GSM8K PPO colocated example failed"
 
 
+@pytest.mark.sglang
+@pytest.mark.multi_gpu
+def test_gsm8k_grpo_awex_colocate(tmp_path_factory, monkeypatch):
+    """Actor and rollout time-share the GPUs, syncing weights through AWEX."""
+    experiments_path = tmp_path_factory.mktemp("experiments")
+    name_resolve_path = tmp_path_factory.mktemp("name_resolve")
+    model_path = get_model_path(
+        "/storage/openpsi/models/Qwen__Qwen3-0.6B", "Qwen/Qwen3-0.6B"
+    )
+    dataset_path = get_dataset_path("/storage/openpsi/data/gsm8k", "openai/gsm8k")
+
+    example_file = "examples/math/gsm8k_rl.py"
+    config_name = "examples/math/gsm8k_grpo.yaml"
+
+    monkeypatch.setenv("AREAL_ALLOW_DEFAULT_ADMIN_KEY", "1")
+
+    success = run_async_task(
+        run_example,
+        example_file,
+        config_name,
+        # One inference server keeps every rank in a single NCCL group, and two
+        # GPUs give the ranks a peer to talk to.
+        "rollout.backend=sglang:d1t2p1",
+        "actor.backend=megatron:d2",
+        "actor.weight_update_mode=awex",
+        "enable_offload=True",
+        "gconfig.n_samples=2",
+        "gconfig.max_new_tokens=256",
+        "sglang.mem_fraction_static=0.3",
+        "+sglang.enable_memory_saver=True",
+        # Keep the memory-saver hook available but let SGLang open its own
+        # regions; an auto-opened region would nest and trip TMS's assertion.
+        "+actor.scheduling_spec.0.env_vars.TMS_INIT_ENABLE=0",
+        "+actor.scheduling_spec.0.env_vars.TMS_INIT_ENABLE_CPU_BACKUP=0",
+        "actor.mb_spec.max_tokens_per_mb=1024",
+        "train_dataset.batch_size=2",
+        "valid_dataset.batch_size=2",
+        f"train_dataset.path={dataset_path}",
+        f"valid_dataset.path={dataset_path}",
+        "cluster.n_gpus_per_node=2",
+        f"cluster.fileroot={str(experiments_path)}",
+        f"cluster.name_resolve.nfs_record_root={str(name_resolve_path)}",
+        f"actor.path={model_path}",
+        "scheduler.type=local",
+        timeout=900,
+    )
+    assert success, "GSM8K GRPO AWEX colocated example failed"
+
+
 @pytest.mark.ci
 @pytest.mark.parametrize(
     "rollout_backend,actor_backend",
@@ -440,7 +497,7 @@ def test_gsm8k_ppo_colocate(tmp_path_factory):
     ],
 )
 @pytest.mark.multi_gpu
-def test_gsm8k_grpo_lora(tmp_path_factory, rollout_backend, actor_backend):
+def test_gsm8k_grpo_lora(tmp_path_factory, rollout_backend, actor_backend, monkeypatch):
     experiments_path = tmp_path_factory.mktemp("experiments")
     name_resolve_path = tmp_path_factory.mktemp("name_resolve")
     model_path = get_model_path(
@@ -450,6 +507,11 @@ def test_gsm8k_grpo_lora(tmp_path_factory, rollout_backend, actor_backend):
 
     example_file = "examples/math/gsm8k_rl.py"
     config_name = "examples/math/gsm8k_grpo_lora.yaml"
+
+    # Allow the proxy rollout server to start with the default admin API key
+    # when bound to the runner's non-loopback IP (CI is a trusted environment).
+    monkeypatch.setenv("AREAL_ALLOW_DEFAULT_ADMIN_KEY", "1")
+
     success = run_async_task(
         run_example,
         example_file,
@@ -458,6 +520,12 @@ def test_gsm8k_grpo_lora(tmp_path_factory, rollout_backend, actor_backend):
         f"actor.backend={actor_backend}",
         "gconfig.n_samples=2",
         "gconfig.max_new_tokens=256",
+        # TODO: workaround for ArealOpenAI client not forwarding gconfig.lora_name
+        # into the inner GenerationHyperparameters (it falls back to the
+        # default "default_lora"), so the server-side adapter name and the
+        # request-side lora_path mismatch. Remove once the client transparently
+        # propagates gconfig.lora_name (or accepts it via extra_body).
+        "gconfig.lora_name=default_lora",
         "actor.mb_spec.max_tokens_per_mb=1024",
         "train_dataset.batch_size=16",
         "valid_dataset.batch_size=16",
@@ -796,7 +864,7 @@ def test_tau2(tmp_path_factory):
         [
             "python3",
             "-m",
-            "areal.experimental.inference_service.sglang.launch_server",
+            "areal.v2.inference_service.sglang.launch_server",
             "--model-path",
             model_path,
             "--host",
