@@ -29,6 +29,7 @@ from areal.infra.utils.launcher import (
     JobState,
     get_scheduling_spec,
     get_thread_env_vars,
+    run_post_exit_hook,
     validate_config_for_distributed_launcher,
     wait_llm_server_addrs,
 )
@@ -571,7 +572,10 @@ def slurm_main(config, run_id: int = 0):
                 n_backend_servers,
             )
         except (TimeoutError, KeyboardInterrupt) as e:
-            launcher.stop_all(force=True)
+            try:
+                launcher.stop_all(force=True)
+            finally:
+                run_post_exit_hook(config)
             raise e
 
     trainer_n_nodes = n_nodes - n_backend_nodes
@@ -629,6 +633,14 @@ def slurm_main(config, run_id: int = 0):
             # Required by NCCL weight update group.
             _env_vars["NCCL_CUMEM_ENABLE"] = "0"
             _env_vars["NCCL_NVLS_ENABLE"] = "0"
+        if (
+            any(a.backend == "megatron" for a in allocation_mode.allocations)
+            and config.actor.megatron.use_deterministic_algorithms
+        ):
+            # TransformerEngine snapshots this env var at import or attention
+            # module construction depending on version; exporting it before
+            # the trainer process starts is safe for all of them.
+            _env_vars["NVTE_ALLOW_NONDETERMINISTIC_ALGO"] = "0"
 
         trainer_cpus_per_task = actor_spec.cpu * config.cluster.n_gpus_per_node
         # Use per-GPU CPU count for thread env vars since torchrun spawns
@@ -675,6 +687,7 @@ def slurm_main(config, run_id: int = 0):
         )
     except (KeyboardInterrupt, JobException, TimeoutError) as e:
         launcher.stop_all(force=True)
+        run_post_exit_hook(config)
         recover_states = [JobState.FAILED, JobState.NOT_FOUND]
         if isinstance(e, JobException):
             recover_this = (

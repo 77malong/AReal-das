@@ -31,9 +31,11 @@ from areal.infra.utils.launcher import (
     JobState,
     get_scheduling_spec,
     get_thread_env_vars,
+    run_post_exit_hook,
     validate_config_for_launcher,
     wait_llm_server_addrs,
 )
+from areal.infra.utils.proc import build_target_cmd
 from areal.utils import logging, name_resolve, names
 from areal.utils.network import find_free_ports
 from areal.utils.offload import get_tms_env_vars
@@ -142,11 +144,7 @@ class LocalLauncher:
                 env_vars[current_platform.device_control_env_var] = ",".join(
                     str(self._gpu_devices[j]) for j in visible_devices
                 )
-            c = (
-                " ".join(str(k) + "=" + str(v) for k, v in env_vars.items())
-                + " stdbuf -oL "
-                + cmd[i]
-            )
+            c = build_target_cmd(cmd[i], env_vars=env_vars, use_stdbuf=True)
             c = f"{c} 2>&1 | tee -a {self.log_path_of(job_name)}"
             logger.info("Starting local process with command: %s", c)
             process = subprocess.Popen(
@@ -371,7 +369,10 @@ def local_main(config, run_id: int = 0):
                 f"LLM inference server launched at: AREAL_LLM_SERVER_ADDRS={','.join(server_addrs)}"
             )
         except (TimeoutError, KeyboardInterrupt) as e:
-            launcher.stop_all(signal="SIGINT")
+            try:
+                launcher.stop_all(signal="SIGINT")
+            finally:
+                run_post_exit_hook(config)
             raise e
 
     if config.get("enable_offload", False):
@@ -388,6 +389,14 @@ def local_main(config, run_id: int = 0):
             # Required by NCCL weight update group.
             _env_vars["NCCL_CUMEM_ENABLE"] = "0"
             _env_vars["NCCL_NVLS_ENABLE"] = "0"
+        if (
+            any(a.backend == "megatron" for a in alloc_mode.allocations)
+            and config.actor.megatron.use_deterministic_algorithms
+        ):
+            # TransformerEngine snapshots this env var at import or attention
+            # module construction depending on version; exporting it before
+            # the trainer process starts is safe for all of them.
+            _env_vars["NVTE_ALLOW_NONDETERMINISTIC_ALGO"] = "0"
         # All experiment configs should have the `actor` field.
         actor_spec = get_scheduling_spec(config.actor)
         actor_env_vars = actor_spec.env_vars
@@ -421,7 +430,10 @@ def local_main(config, run_id: int = 0):
             remove_status=(),
         )
     except (KeyboardInterrupt, JobException, TimeoutError) as e:
-        launcher.stop_all("SIGTERM")
+        try:
+            launcher.stop_all("SIGTERM")
+        finally:
+            run_post_exit_hook(config)
         # NOTE: For local launcher, We cannot distinguish between a completed job and a failed job.
         # So we will always try to recover the job if it is finished or failed.
         recover_states = [JobState.FAILED, JobState.NOT_FOUND, JobState.COMPLETED]

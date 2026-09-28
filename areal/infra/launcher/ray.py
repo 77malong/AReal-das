@@ -34,6 +34,7 @@ from areal.infra.utils.launcher import (
     JobState,
     get_scheduling_spec,
     get_thread_env_vars,
+    run_post_exit_hook,
     validate_config_for_distributed_launcher,
     wait_llm_server_addrs,
 )
@@ -490,6 +491,7 @@ def ray_main(config, run_id: int = 0):
             launcher.stop_all(
                 force=False
             )  # force=False will send KeyboardInterrupt to sglang_server.main() to further clean all sglang-related processes
+            run_post_exit_hook(config)
             raise e
     elif allocation_mode.gen_backend == "vllm":
         config.vllm = to_structured_cfg(config.vllm, vLLMConfig)
@@ -531,7 +533,10 @@ def ray_main(config, run_id: int = 0):
                 n_vllm_servers,
             )
         except (TimeoutError, KeyboardInterrupt) as e:
-            launcher.stop_all(force=True)
+            try:
+                launcher.stop_all(force=True)
+            finally:
+                run_post_exit_hook(config)
             raise e
 
     if config.get("enable_offload", False):
@@ -584,6 +589,14 @@ def ray_main(config, run_id: int = 0):
             # Required by NCCL weight update group.
             _env_vars["NCCL_CUMEM_ENABLE"] = "0"
             _env_vars["NCCL_NVLS_ENABLE"] = "0"
+        if (
+            any(a.backend == "megatron" for a in allocation_mode.allocations)
+            and config.actor.megatron.use_deterministic_algorithms
+        ):
+            # TransformerEngine snapshots this env var at import or attention
+            # module construction depending on version; exporting it before
+            # the trainer process starts is safe for all of them.
+            _env_vars["NVTE_ALLOW_NONDETERMINISTIC_ALGO"] = "0"
 
         # Use per-GPU CPU count for thread env vars since Ray spawns individual
         # tasks per GPU, each inheriting these env vars. This differs from
@@ -626,6 +639,7 @@ def ray_main(config, run_id: int = 0):
         # Note: For trainer processes, we use force=True because the trainer doesn't
         # handle KeyboardInterrupt properly when force=False.
         launcher.stop_all(force=True, pattern="trainer")
+        run_post_exit_hook(config)
         recover_states = [JobState.FAILED]
         if isinstance(e, JobException):
             recover_this = (
