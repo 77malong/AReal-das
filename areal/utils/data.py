@@ -401,10 +401,11 @@ def split_batch(
 
 
 def batched_call(
-    fn: Callable[[dict[str, Any]], Any],
+    fn: Callable[..., Any],
     data: list[dict[str, Any]],
     *,
     unpack: bool = True,
+    pass_meta: bool = False,
 ) -> Any:
     """Concatenate per-trajectory dicts into one batch, call *fn*, optionally unpack.
 
@@ -421,9 +422,12 @@ def batched_call(
     unpack : bool
         If True (default), split the result back into a per-trajectory list
         via :func:`split_batch`.
+    pass_meta : bool
+        If True, call ``fn(batched, meta)`` so functions that need trajectory
+        metadata can consume it without injecting sentinel keys into the batch.
     """
     batched, meta = concat_batch(data)
-    result = fn(batched)
+    result = fn(batched, meta) if pass_meta else fn(batched)
     if unpack:
         return split_batch(result, meta)
     return result
@@ -817,10 +821,10 @@ N_TOKENS_PER_PAGE = 256
 
 def pad_packed_tensor_dict(
     data: dict[str, Any],
-    pad_to_length: int,
+    pad_to_length: int | None,
     pad_value: float = 0.0,
     seq_align_to: int | None = None,
-) -> tuple[dict[str, Any], int, torch.Tensor, int]:
+) -> tuple[dict[str, Any], int, torch.Tensor, int | None]:
     """Pad a packed dict of tensors to a specified length.
     This function assumes that the input data contains "cu_seqlens" and "max_seqlen" key,
     and all other tensors of shape [total_length, ] will be padded to `pad_to_length`.
@@ -829,7 +833,9 @@ def pad_packed_tensor_dict(
 
     Args:
         data (Dict): Dictionary containing tensors to be packed.
-        pad_to_length (int): The length to pad the tensors to. All tensors
+        pad_to_length (int | None): The total packed length to pad tensors to.
+            If None, only align individual sequences without appending a
+            batch-level padding sequence.
 
     Returns:
         Dict: Dictionary with padded tensors and modified "cu_seqlens" and
@@ -915,18 +921,21 @@ def pad_packed_tensor_dict(
 
         data = sequence_padded_data
         align_to_length = cu_seqlens_padded[-1].item()
-        # ensure pad_to_length is a integer multiple of both seq_align_to and N_TOKENS_PER_PAGE
-        lcm = np.lcm(seq_align_to, N_TOKENS_PER_PAGE).item()
-        pad_to_length = (pad_to_length + lcm - 1) // lcm * lcm
-
         cu_seqlens = data["cu_seqlens"]
         max_seqlen = data["max_seqlen"]
         total_length = data["cu_seqlens"][-1].item()
-        if pad_to_length < total_length:
-            # NOTE: In some occasion where sequence lengths, sequence padding will make total length
-            # exceed expected `pad_to_length`. This happens more often when sequence lengths are small.
-            # In this case, we increase pad_to_length.
-            pad_to_length = (total_length + lcm - 1) // lcm * lcm
+        if pad_to_length is not None:
+            # Ensure pad_to_length is an integer multiple of both
+            # seq_align_to and N_TOKENS_PER_PAGE.
+            lcm = np.lcm(seq_align_to, N_TOKENS_PER_PAGE).item()
+            pad_to_length = (pad_to_length + lcm - 1) // lcm * lcm
+            if pad_to_length < total_length:
+                # Sequence alignment can make the total exceed the original
+                # target, especially when sequences are short.
+                pad_to_length = (total_length + lcm - 1) // lcm * lcm
+
+    if pad_to_length is None:
+        return data, 0, old_cu_seqlens, align_to_length
 
     # Pad batch
     pad_length = pad_to_length - total_length
@@ -976,6 +985,40 @@ def pad_packed_tensor_dict(
         old_cu_seqlens,
         align_to_length,
     )
+
+
+def align_mb_list_sequences(
+    mb_list: MicroBatchList,
+    pad_value: float = 0.0,
+    seq_align_to: int = 1,
+) -> MicroBatchList:
+    """Align real sequences without adding a synthetic padding sequence.
+
+    This projection is for model inputs that are reconstructed as BSHD. A
+    trailing batch-level padding segment in ``cu_seqlens`` would become an
+    extra batch row rather than inert packed-token padding.
+    """
+    padded_mbs = []
+    old_cu_seqlens_list = []
+    align_to_lengths = []
+    for mb in mb_list.mbs:
+        padded_mb, _, old_cu_seqlens, align_to_length = pad_packed_tensor_dict(
+            mb,
+            pad_to_length=None,
+            pad_value=pad_value,
+            seq_align_to=seq_align_to,
+        )
+        assert align_to_length is not None
+        padded_mbs.append(padded_mb)
+        old_cu_seqlens_list.append(old_cu_seqlens)
+        align_to_lengths.append(align_to_length)
+
+    mb_list.padded_mbs = padded_mbs
+    mb_list.padding_lengths = [0] * len(padded_mbs)
+    mb_list.padded_to_lengths = align_to_lengths.copy()
+    mb_list.old_cu_seqlens_list = old_cu_seqlens_list
+    mb_list.align_to_lengths = align_to_lengths
+    return mb_list
 
 
 def pad_mb_list(
@@ -1393,6 +1436,37 @@ class Normalization:
         self.group_size = config.group_size
         self.eps = config.eps
 
+    def _build_group_slices(
+        self, bs: int, group_sizes: list[int] | None
+    ) -> list[slice]:
+        """Build slices for group-level normalization.
+
+        When ``group_sizes`` (e.g. ``[8, 7, 8, ...]``) is provided it gives
+        the actual sample count of each trajectory group, handling variable-size
+        groups that arise when some rollout samples fail / are filtered. A fixed
+        ``group_size`` slice would otherwise straddle two groups, or leave a tail
+        of sequences whose std stays 0 → advantage blows up to (reward-mean)/eps.
+        When *None*, fall back to fixed-``group_size`` slicing.
+        """
+        if group_sizes is not None:
+            if any(sz <= 0 for sz in group_sizes):
+                raise ValueError(f"group_sizes must be all positive, got {group_sizes}")
+            if sum(group_sizes) != bs:
+                raise ValueError(
+                    f"group_sizes sum ({sum(group_sizes)}) must equal "
+                    f"batch size ({bs}), got {group_sizes}"
+                )
+            slices: list[slice] = []
+            offset = 0
+            for sz in group_sizes:
+                slices.append(slice(offset, offset + sz))
+                offset += sz
+            return slices
+        return [
+            slice(i * self.group_size, (i + 1) * self.group_size)
+            for i in range(bs // self.group_size)
+        ]
+
     @torch.no_grad()
     def __call__(
         self,
@@ -1400,6 +1474,7 @@ class Normalization:
         loss_mask: torch.Tensor | None = None,
         high_precision: bool = True,
         reduce_group=None,
+        group_sizes: list[int] | None = None,
     ) -> torch.Tensor:
         bs = x.size(0)
         eps = self.eps
@@ -1407,6 +1482,11 @@ class Normalization:
         # Early return if no elements are active (all masked out)
         if loss_mask is not None and loss_mask.sum().item() == 0:
             return x.float()
+
+        # Pre-compute group slices once (variable-size groups via group_sizes).
+        group_slices = None
+        if self.mean_level == "group" or self.std_level == "group":
+            group_slices = self._build_group_slices(bs, group_sizes)
 
         # Step 1: Compute mean
         if self.mean_level == "batch":
@@ -1421,16 +1501,17 @@ class Normalization:
             mean = mean.expand_as(x)
         elif self.mean_level == "group":
             mean = torch.zeros_like(x)
-            for i in range(0, bs // self.group_size):
-                s = slice(i * self.group_size, (i + 1) * self.group_size)
+            for s in group_slices:
                 xx = x[s]
                 m = loss_mask[s] if loss_mask is not None else None
+                group_sz = s.stop - s.start
 
-                # Special case: with group_size=1 and leave_one_out=True, mean should be 0
-                if self.group_size == 1 and self.mean_leave1out:
-                    dtype = torch.float64 if high_precision else torch.float32
-                    group_mean = torch.zeros(
-                        (1, *xx.shape[1:]), dtype=dtype, device=xx.device
+                # A singleton group has no peer to leave out. Use itself as the
+                # baseline so leave-one-out normalization outputs zero instead
+                # of passing the raw reward/advantage through.
+                if group_sz == 1 and self.mean_leave1out:
+                    group_mean = xx.to(
+                        torch.float64 if high_precision else torch.float32
                     )
                 else:
                     group_mean = self._compute_mean(
@@ -1465,14 +1546,14 @@ class Normalization:
             std = std.expand_as(x)
         elif self.std_level == "group":
             std = torch.zeros_like(x)
-            for i in range(0, bs // self.group_size):
-                s = slice(i * self.group_size, (i + 1) * self.group_size)
+            for s in group_slices:
                 xx = x[s]
                 m = loss_mask[s] if loss_mask is not None else None
                 group_mean_slice = mean[s]  # already computed and expanded
+                group_sz = s.stop - s.start
 
                 # Special case: with group_size=1 and std_unbiased=True, std should be 1 for numerical stability
-                if self.group_size == 1 and self.std_unbiased:
+                if group_sz == 1 and self.std_unbiased:
                     dtype = torch.float64 if high_precision else torch.float32
                     group_std = torch.ones(
                         (1, *xx.shape[1:]), dtype=dtype, device=xx.device

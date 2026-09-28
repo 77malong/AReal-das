@@ -1,20 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
-# Modified by Hygon Information Technology Co., Ltd., 2026.
 
 import functools
-import os
+import math
 from typing import Any
 
 import torch
 
 from areal.api import TrainEngine
 from areal.api.cli_args import MicroBatchSpec, PPOActorConfig, RejectionSamplingConfig
-from areal.experimental.training_service.controller.controller import (
-    GatewayTrainController,
-)
 from areal.infra import TrainController
 from areal.infra.rpc.serialization import serialize_value
+from areal.trainer.ppo.gae import (
+    _build_gae_lambda_context,
+    _compute_token_level_gae,
+    _compute_turn_level_gae,
+)
+from areal.trainer.ppo.lambda_fn import resolve_gae_lambda_fn
 from areal.trainer.ppo.stats import infer_token_denominator
 from areal.utils import logging, stats_tracker
 from areal.utils.constants import (
@@ -30,17 +31,37 @@ from areal.utils.constants import (
 from areal.utils.data import (
     KLEstimator,
     Normalization,
+    TrajBatchMeta,
     batched_call,
     split_padded_tensor_dict_into_mb_list,
 )
 from areal.utils.functional import (
+    cispo_loss_fn,
     ppo_actor_loss_fn,
     reward_overlong_penalty,
     sapo_loss_fn,
 )
 from areal.utils.perf_tracer import trace_perf
+from areal.v2.training_service.controller.controller import (
+    GatewayTrainController,
+)
 
 logger = logging.getLogger("PPOActor")
+
+
+def _infer_prompt_lens(
+    attention_mask: torch.Tensor, loss_mask: torch.Tensor
+) -> torch.Tensor:
+    """Return the index of the first generated token for each trajectory.
+
+    ``loss_mask`` arrives rolled left by one (see ``_compute_advantages``), so it
+    marks the position that *predicts* each generated token. Undo the roll before
+    locating the first one, otherwise every prompt length comes out one short.
+    """
+    loss_mask_long = torch.roll(loss_mask.long(), shifts=1, dims=-1)
+    first_gen_idx = loss_mask_long.argmax(dim=-1)
+    has_gen = loss_mask_long.any(dim=-1)
+    return torch.where(has_gen, first_gen_idx, attention_mask.long().sum(-1))
 
 
 class PPOActor:
@@ -51,8 +72,7 @@ class PPOActor:
         self.reward_bias = config.reward_bias
         self.reward_scaling = config.reward_scaling
         self.reward_clip = config.reward_clip
-        self.torch_profile_done = False
-        self.torch_profile_update = 0
+
         self.kl_ctl = config.kl_ctl
         self.kl_estimator = KLEstimator(config.kl_estimator)
 
@@ -63,6 +83,13 @@ class PPOActor:
 
         self.discount = config.discount
         self.gae_lambda = config.gae_lambda
+        self.gae_lambda_fn, self._gae_lambda_is_custom = resolve_gae_lambda_fn(
+            config.gae_lambda
+        )
+        self.gae_lambda_kwargs = (
+            dict(config.gae_lambda_kwargs) if self._gae_lambda_is_custom else {}
+        )
+        self.gae_timestep_unit = config.gae_timestep_unit
         self.mask_no_eos_with_zero = config.mask_no_eos_with_zero
 
         self.temperature = config.temperature
@@ -127,6 +154,8 @@ class PPOActor:
         logger.info(
             f"  reward_norm: {config.reward_norm if config.reward_norm else 'DISABLED (None)'}"
         )
+        logger.info(f"  gae_lambda: {config.gae_lambda}")
+        logger.info(f"  gae_timestep_unit: {config.gae_timestep_unit}")
         logger.info(f"  eps_clip: {config.eps_clip}")
         logger.info("=" * 70)
 
@@ -144,11 +173,12 @@ class PPOActor:
 
     @trace_perf("ppo_actor.compute_advantages", category="compute")
     def compute_advantages(self, data: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return batched_call(self._compute_advantages, data)
+        return batched_call(self._compute_advantages, data, pass_meta=True)
 
-    def _compute_advantages(self, data: dict[str, Any]) -> dict[str, Any]:
+    def _compute_advantages(
+        self, data: dict[str, Any], meta: TrajBatchMeta | None = None
+    ) -> dict[str, Any]:
         bs = data["input_ids"].shape[0]
-        max_seqlen = data["input_ids"].shape[1]
         batch_indices = torch.arange(
             bs, device=data["input_ids"].device, dtype=torch.long
         )
@@ -173,11 +203,28 @@ class PPOActor:
         reward_score = torch.clip(
             reward_score, max=self.reward_clip, min=-self.reward_clip
         )
+        # Use actual trajectory group sizes when available so group-level
+        # normalization handles failed/filtered rollout samples without slicing
+        # across prompts. Direct calls without batched metadata keep the legacy
+        # fixed-group-size behavior.
+        group_sizes = meta.traj_group_sizes if meta is not None else None
         if self.reward_norm:
-            reward_score = self.reward_norm(reward_score)
+            reward_score = self.reward_norm(reward_score, group_sizes=group_sizes)
 
         loss_mask = data["loss_mask"].float()
         loss_mask = torch.roll(loss_mask, shifts=-1, dims=-1)
+
+        # Align structural turn IDs to the same next-token prediction
+        # convention used by loss_mask and log probabilities.
+        turn_ids = data.get("turn_ids")
+        if turn_ids is not None:
+            turn_ids = torch.roll(turn_ids, shifts=-1, dims=-1)
+            turn_ids[:, -1] = -1
+        elif self.gae_timestep_unit == "turn":
+            raise ValueError(
+                "actor.gae_timestep_unit='turn' requires rollout data to "
+                "include 'turn_ids'."
+            )
         # Apply the mask to log probabilities.
         if not self.config.use_decoupled_loss and self.config.recompute_logprob:
             # Overwrite logprobs produced by the inference engine
@@ -207,99 +254,117 @@ class PPOActor:
         kl_rewards = rewards.clone()
         # KL rewards at the next token after eos is zero.
         rewards[batch_indices, seqlens - 1] = 0
+        gae_kl_rewards = rewards.clone()
         indices = torch.clip(seqlens - 2, min=0)
+        gae_outcome_rewards = torch.zeros_like(rewards)
         if self.mask_no_eos_with_zero:
-            rewards[batch_indices, indices] += torch.where(
+            gae_outcome_rewards[batch_indices, indices] = torch.where(
                 seq_no_eos_mask, 0, reward_score
             )
         else:
-            rewards[batch_indices, indices] += reward_score
+            gae_outcome_rewards[batch_indices, indices] = reward_score
+
+        # Turn-level GAE treats each generated turn as a macro timestep. Keep
+        # token KL as a local actor penalty rather than broadcasting a turn's
+        # summed KL into every token and into critic targets.
+        if self.gae_timestep_unit == "turn":
+            rewards = gae_outcome_rewards
+        else:
+            rewards = gae_kl_rewards + gae_outcome_rewards
 
         # Compute GAE.
         if "values" not in data:
             values = torch.zeros_like(rewards)
         else:
             values = data["values"]
-        advantages_reversed = [
-            torch.zeros(bs, dtype=torch.float32, device=values.device)
-        ]
-        lastgaelam = 0
-        nextvalues = values[:, max_seqlen - 1] * seq_no_eos_mask
-        for t in reversed(range(max_seqlen - 1)):
-            delta = rewards[:, t] + self.discount * nextvalues - values[:, t]
-            newgaelam = delta + self.discount * self.gae_lambda * lastgaelam
-
-            # Skip tokens that do not contribute to the loss
-            mask = loss_mask[:, t]
-            nextvalues = nextvalues * (1 - mask) + values[:, t] * mask
-            lastgaelam = lastgaelam * (1 - mask) + newgaelam * mask
-            advantages_reversed.append(lastgaelam)
-
-        advantages = torch.stack(advantages_reversed[::-1], dim=1)
-        data["returns"] = advantages + values
+        if self._gae_lambda_is_custom:
+            gae_lambda = self._compute_gae_lambda(loss_mask, turn_ids)
+        else:
+            gae_lambda = float(self.gae_lambda)
+            if not math.isfinite(gae_lambda):
+                raise ValueError(f"Static gae_lambda must be finite, got {gae_lambda}")
+        if self.gae_timestep_unit == "turn":
+            assert turn_ids is not None
+            advantages, returns = _compute_turn_level_gae(
+                rewards=rewards,
+                values=values,
+                loss_mask=loss_mask,
+                turn_ids=turn_ids,
+                seq_no_eos_mask=seq_no_eos_mask,
+                discount=self.discount,
+                gae_lambda=gae_lambda,
+            )
+            advantages = advantages + gae_kl_rewards
+        else:
+            advantages, returns = _compute_token_level_gae(
+                rewards=rewards,
+                values=values,
+                loss_mask=loss_mask,
+                seq_no_eos_mask=seq_no_eos_mask,
+                discount=self.discount,
+                gae_lambda=gae_lambda,
+            )
+        data["returns"] = returns
 
         # Optionally perform advantage normalization.
         if self.adv_norm is not None:
-            advantages = self.adv_norm(advantages, loss_mask)
+            # Use the same actual trajectory group sizes as reward normalization;
+            # ignored when adv_norm is batch-level.
+            advantages = self.adv_norm(advantages, loss_mask, group_sizes=group_sizes)
 
         # Store data in the dict.
         data["advantages"] = advantages
         data["kl_rewards"] = kl_rewards
-        data["tot_rewards"] = rewards
+        data["tot_rewards"] = gae_kl_rewards + gae_outcome_rewards
         data["loss_mask"] = loss_mask
         # because we have rolled old_logp by -1
         data["logprobs"] = old_logp
 
         return data
 
+    def _compute_gae_lambda(
+        self,
+        loss_mask: torch.Tensor,
+        turn_ids: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """Resolve one lambda value per local trajectory without changing masks."""
+        context = _build_gae_lambda_context(
+            loss_mask,
+            turn_ids,
+            gae_timestep_unit=self.gae_timestep_unit,
+        )
+        gae_lambda = self.gae_lambda_fn(context, **self.gae_lambda_kwargs)
+        if not isinstance(gae_lambda, torch.Tensor):
+            raise TypeError(
+                "gae_lambda function must return a torch.Tensor with shape "
+                f"[{loss_mask.shape[0]}], got {type(gae_lambda).__name__}"
+            )
+        expected_shape = torch.Size([loss_mask.shape[0]])
+        if gae_lambda.shape != expected_shape:
+            raise ValueError(
+                "gae_lambda function must return one value per local trajectory: "
+                f"expected shape {expected_shape}, got {gae_lambda.shape}"
+            )
+        if gae_lambda.device != loss_mask.device:
+            raise ValueError(
+                "gae_lambda output and loss_mask must be on the same device, got "
+                f"{gae_lambda.device} and {loss_mask.device}"
+            )
+        if not torch.is_floating_point(gae_lambda):
+            raise TypeError(
+                "gae_lambda function must return a floating-point tensor, got "
+                f"{gae_lambda.dtype}"
+            )
+        torch._assert_async(
+            torch.all(torch.isfinite(gae_lambda)),
+            "gae_lambda function returned a non-finite value",
+        )
+        return gae_lambda.detach().float()
+
     @trace_perf("ppo_actor.ppo_update", category="compute")
     @stats_tracker.scope_func_wrapper("ppo_actor")
     def ppo_update(self, data: list[dict[str, Any]]) -> None:
-        # Profile one real PPO update inside the remote actor process.
-        profile_dir = os.environ.get("AREAL_TORCH_PROF_DIR")
-        rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
-        target_rank = int(os.environ.get("AREAL_TORCH_PROF_RANK", "0"))
-
-        current_update = self.torch_profile_update
-        self.torch_profile_update += 1
-        target_update = int(os.environ.get("AREAL_TORCH_PROF_UPDATE", "2"))
-
-        should_profile = (
-            bool(profile_dir)
-            and rank == target_rank
-            and current_update == target_update
-            and not self.torch_profile_done
-        )
-
-        if not should_profile:
-            batched_call(self._ppo_update, data, unpack=False)
-            return
-
-        self.torch_profile_done = True
-        os.makedirs(profile_dir, exist_ok=True)
-        trace_path = os.path.join(
-            profile_dir,
-            f"ppo-update-rank{rank}-pid{os.getpid()}.json",
-        )
-
-        activities = [torch.profiler.ProfilerActivity.CPU]
-        if torch.cuda.is_available():
-            activities.append(torch.profiler.ProfilerActivity.CUDA)
-            torch.cuda.synchronize()
-
-        with torch.profiler.profile(
-            activities=activities,
-            record_shapes=True,
-            profile_memory=True,
-            with_stack=False,
-        ) as prof:
-            batched_call(self._ppo_update, data, unpack=False)
-
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-
-        prof.export_chrome_trace(trace_path)
-        logger.info("Torch profiler trace saved to %s", trace_path)
+        batched_call(self._ppo_update, data, unpack=False)
 
     def _ppo_update(self, data: dict[str, Any]) -> None:
         attn_mask = data["attention_mask"]
@@ -308,9 +373,14 @@ class PPOActor:
         seqlens = attn_mask.sum(-1)
 
         ########## Logging code starts ##########
+        task_reward = (
+            data["original_rewards"].float()
+            if "original_rewards" in data
+            else reward_score.float()
+        )
         result_denominators = {
-            "correct_n_seqs": (reward_score > 0).bool(),
-            "incorrect_n_seqs": (reward_score <= 0).bool(),
+            "correct_n_seqs": (task_reward > 0).bool(),
+            "incorrect_n_seqs": (task_reward <= 0).bool(),
         }
         if self.config.log_agent_stats:
             if "begin_of_trajectory" not in data:
@@ -344,10 +414,10 @@ class PPOActor:
         )
         stats_tracker.stat(**stats, denominator="n_valid_tokens")
 
-        prompt_lens = data["attention_mask"].sum(-1) - data["loss_mask"].sum(-1)
+        prompt_lens = _infer_prompt_lens(data["attention_mask"], data["loss_mask"])
         seq_stats = dict(
             no_eos_ratios=(seqlens == attn_mask.shape[-1]).float(),
-            task_reward=reward_score.float(),
+            task_reward=task_reward,
             prompt_len=prompt_lens.float(),
             seq_len=seqlens.float(),
         )
@@ -406,6 +476,7 @@ class PPOActor:
                         use_sapo_loss=self.config.use_sapo_loss,
                         sapo_tau_pos=self.config.sapo_tau_pos,
                         sapo_tau_neg=self.config.sapo_tau_neg,
+                        use_cispo_loss=self.config.use_cispo_loss,
                         use_decoupled_loss=self.config.use_decoupled_loss,
                     ),
                     loss_weight_fn=lambda x: x["loss_mask"].count_nonzero(),
@@ -468,9 +539,12 @@ def grpo_loss_fn(
     use_sapo_loss: bool = False,
     sapo_tau_pos: float = 1.0,
     sapo_tau_neg: float = 1.05,
+    use_cispo_loss: bool = False,
     use_decoupled_loss: bool = False,
     vocab_min_logits: torch.Tensor | None = None,
     vocab_max_logits: torch.Tensor | None = None,
+    vocab_mean_logits: torch.Tensor | None = None,
+    vocab_norm_logits: torch.Tensor | None = None,
 ):
     """Loss function for actor step, all inputs should be splitted into
     pipeline micro batches, returns loss and logging stats."""
@@ -480,6 +554,9 @@ def grpo_loss_fn(
     prox_logp_gt = input_data.get("prox_logp")  # Could be None if skipped
 
     entropy = entropy.detach()
+
+    if ProxLogpMethod(prox_logp_method) == ProxLogpMethod.REUSE_TRAIN_LOGP:
+        prox_logp_gt = logprobs.detach()
 
     # Resolve proximal log-probabilities based on method
     prox_logp = _resolve_proximal_logp(
@@ -495,8 +572,30 @@ def grpo_loss_fn(
     if m2_threshold is not None:
         loss_mask = _apply_m2po_masking(old_logp, prox_logp, loss_mask, m2_threshold)
 
-    # Use SAPO or PPO loss
-    if use_sapo_loss:
+    # Use CISPO, SAPO, or PPO loss
+    if use_cispo_loss:
+        if use_sapo_loss:
+            raise ValueError(
+                "CISPO and SAPO are mutually exclusive surrogates. "
+                "Set at most one of use_cispo_loss / use_sapo_loss."
+            )
+        if importance_sampling_level != "token":
+            raise ValueError(
+                "CISPO only supports importance_sampling_level='token'. "
+                "Sequence-level (GSPO-style) CISPO has no published surrogate."
+            )
+        loss, stat = cispo_loss_fn(
+            logprobs=logprobs,
+            proximal_logprobs=prox_logp,
+            advantages=advantages,
+            eps_clip=eps_clip,
+            eps_clip_higher=eps_clip_higher,
+            loss_mask=loss_mask,
+            old_logprobs=old_logp,
+            rejection_sampling=rejection_sampling,
+            cu_seqlens=input_data.get("cu_seqlens"),
+        )
+    elif use_sapo_loss:
         if use_decoupled_loss:
             raise ValueError(
                 "SAPO is not compatible with `use_decoupled_loss=True`. "
@@ -573,6 +672,7 @@ def grpo_loss_fn(
             denominator="n_valid_tokens",
         )
 
+    logp_diff = (old_logp - logprobs.detach()) * loss_mask
     stats_tracker.stat(
         importance_weight=stat["importance_weight"],
         approx_kl=stat["approx_kl"],
@@ -582,14 +682,30 @@ def grpo_loss_fn(
         actor_loss=stat["loss"],
         clip_ratio=stat["clip_mask"].float(),
         dual_clip_ratio=stat["dual_clip_mask"].float(),
+        logp_diff=logp_diff,
+        logp_abs_diff=logp_diff.abs(),
         denominator="n_valid_tokens",
     )
+
     if "behave_imp_weight" in stat:
         stats_tracker.denominator(unclipped_behave_tokens=stat["behave_mask"])
         stats_tracker.stat(
             behave_imp_weight=stat["behave_imp_weight"],
             behave_approx_kl=stat["behave_approx_kl"],
             denominator="unclipped_behave_tokens",
+        )
+        behave_filtered_mask = loss_mask & ~stat["behave_mask"]
+        stats_tracker.stat(
+            behave_filtered_ratio=behave_filtered_mask.float(),
+            denominator="n_valid_tokens",
+        )
+
+    if "n_valid_tokens" in stat:
+        stats_tracker.scalar(
+            n_total_tokens=stat["n_total_tokens"],
+            n_valid_tokens_in_loss=stat["n_valid_tokens"],
+            n_masked_tokens=stat["n_masked_tokens"],
+            masked_token_ratio=stat["masked_token_ratio"],
         )
     if "filtered_fraction" in stat:
         stats_tracker.scalar(rs_filtered_fraction=stat["filtered_fraction"])
