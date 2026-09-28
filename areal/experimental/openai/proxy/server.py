@@ -50,6 +50,7 @@ class ExportTrajectoriesRequest(BaseModel):
     session_id: str
     discount: float = 1.0
     style: str = "individual"
+    drop_retry_orphans: bool = False
 
 
 class ExportTrajectoriesResponse(BaseModel):
@@ -66,16 +67,33 @@ class ExportTrajectoriesResponse(BaseModel):
 class SessionData:
     """Data associated with a single RL session."""
 
-    def __init__(self, session_id: str):
+    def __init__(
+        self,
+        session_id: str,
+        prefix_matcher=None,
+        sampling_seed_identity: str | None = None,
+    ):
         self.session_id = session_id
+        self.sampling_seed_identity = sampling_seed_identity or session_id
 
         self._completed = False
-        self._completions = InteractionCache()
+        self._completions = InteractionCache(
+            session_id=session_id,
+            prefix_matcher=prefix_matcher,
+        )
         self._completed_event = threading.Event()
         self._start_time = time.time()
         self._last_access_time = time.time()
         self._end_time = None
         self._lock = threading.Lock()
+        self._next_sampling_request_index = 0
+
+    def next_sampling_request_index(self) -> int:
+        """Reserve a unique request index without serializing request execution."""
+        with self._lock:
+            request_index = self._next_sampling_request_index
+            self._next_sampling_request_index += 1
+        return request_index
 
     def update_last_access(self):
         """Update the last access time for this session."""
@@ -113,10 +131,12 @@ class SessionData:
         return True
 
     def export_interactions(
-        self, discount: float, style: str
+        self, discount: float, style: str, drop_retry_orphans: bool = False
     ) -> dict[str, InteractionWithTokenLogpReward]:
         if len(self.completions) == 0:
             return {}
+        if drop_retry_orphans:
+            self.completions.drop_retry_orphans()
         self.completions.apply_reward_discount(turn_discount=discount)
         return self.completions.export_interactions(style=style)
 

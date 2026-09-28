@@ -18,10 +18,6 @@ from anthropic.types.message import Message
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse
-from litellm.llms.anthropic.experimental_pass_through.adapters.transformation import (
-    AnthropicAdapter,
-)
-from litellm.types.utils import ModelResponse as LitellmModelResponse
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from openai.types.chat.completion_create_params import CompletionCreateParams
 from openai.types.responses import Response
@@ -29,8 +25,14 @@ from openai.types.responses.response_create_params import ResponseCreateParams
 from pydantic import BaseModel
 
 from areal.api.cli_args import NameResolveConfig
+from areal.experimental.openai.anthropic import (
+    translate_anthropic_request,
+    translate_anthropic_response,
+    translate_anthropic_stream,
+)
 from areal.experimental.openai.client import ArealOpenAI
 from areal.infra.rpc.serialization import deserialize_value, serialize_value
+from areal.infra.utils.http import validate_admin_api_key
 from areal.utils import name_resolve, names, seeding
 from areal.utils.dynamic_import import import_from_string
 from areal.utils.hf_utils import load_hf_tokenizer
@@ -74,6 +76,10 @@ _warned_messages: set[str] = set()
 _warn_lock = threading.Lock()
 
 
+def _deterministic_sampling_seed(session_id: str, request_index: int) -> int:
+    return seeding.derive_deterministic_seed(session_id, request_index)
+
+
 def _warn_once(msg: str) -> None:
     """Log a warning message, optionally only once if AREAL_PROXY_WARN_ONCE=1."""
     if not _warn_once_enabled:
@@ -109,6 +115,14 @@ _admin_api_key: str = secrets.token_urlsafe(32)
 _api_key_to_session: dict[str, str] = {}
 _session_to_api_key: dict[str, str] = {}  # Reverse mapping for O(1) cleanup
 
+# Pluggable message preprocessors loaded from config at setup time.
+# Applied in order after Anthropic-to-OpenAI translation, before content
+# reaches the ArealOpenAI client.
+_message_preprocessors: list = []
+
+# Pluggable prefix matcher for InteractionCache parent-child matching.
+_prefix_matcher = None
+
 # Server address (set at startup)
 _server_host: str = "0.0.0.0"
 _server_port: int = 8000
@@ -117,15 +131,15 @@ _server_port: int = 8000
 _allocated_ports: set[int] = set()
 _port_alloc_lock = asyncio.Lock()
 
+# Deterministic sampling (set from InferenceEngineConfig at setup time).
+_deterministic_sampling: bool = False
+
 # Server config (needed for name_resolve registration)
 _experiment_name: str | None = None
 _trial_name: str | None = None
 _name_resolve_type: str = "nfs"
 _nfs_record_root: str = "/tmp/areal/name_resolve"
 _etcd3_addr: str = "localhost:2379"
-
-# Adapter to convert Anthropic request to OpenAI format
-_adapter = AnthropicAdapter()
 
 # =============================================================================
 # Request Validation
@@ -261,7 +275,9 @@ async def alloc_ports(raw_request: Request):
 
 def _setup_openai_client():
     global _openai_client, _session_timeout_seconds, _admin_api_key
+    global _message_preprocessors, _prefix_matcher, _deterministic_sampling
     config = _engine.config
+    _deterministic_sampling = bool(getattr(config, "deterministic_sampling", False))
     tokenizer = load_hf_tokenizer(config.tokenizer_path)
     agent_cfg = config.agent
     _openai_client = ArealOpenAI(
@@ -271,15 +287,37 @@ def _setup_openai_client():
         reasoning_parser=agent_cfg.reasoning_parser,
         engine_max_tokens=agent_cfg.engine_max_tokens,
         chat_template_type=agent_cfg.chat_template_type,
+        lora_name=config.lora_name,
     )
+    # Set session timeout from config
     _session_timeout_seconds = agent_cfg.session_timeout_seconds
+    # Validate admin API key BEFORE assigning it to the global, so a
+    # failed validation cannot leave the default key live on the server.
+    # The default admin key is publicly known; refuse to use it when the
+    # server is reachable from outside the local host (otherwise anyone
+    # who can reach this port can call admin endpoints such as
+    # grant_capacity, start_session, export_trajectories, ...).
+    validate_admin_api_key(
+        _server_host,
+        agent_cfg.admin_api_key,
+        default_key=DEFAULT_ADMIN_API_KEY,
+        config_field="AgentConfig.admin_api_key",
+    )
+    # Only commit the key to the global after validation has passed.
     with _lock:
         _admin_api_key = agent_cfg.admin_api_key
-        if _admin_api_key == DEFAULT_ADMIN_API_KEY:
-            logger.warning(
-                "Using default admin API key. Change 'admin_api_key' in "
-                "AgentConfig for non-local deployments."
-            )
+
+    _message_preprocessors = []
+    for path in agent_cfg.message_preprocessors:
+        cls = import_from_string(path)
+        _message_preprocessors.append(cls())
+        logger.info("Loaded message preprocessor: %s", path)
+
+    if agent_cfg.prefix_matcher:
+        _prefix_matcher = import_from_string(agent_cfg.prefix_matcher)
+        logger.info("Loaded prefix matcher: %s", agent_cfg.prefix_matcher)
+    else:
+        _prefix_matcher = None
 
 
 @app.post("/configure")
@@ -453,7 +491,11 @@ def start_session(request: StartSessionRequest) -> StartSessionResponse:
                 session_api_key = secrets.token_urlsafe(32)
 
         _capacity -= 1
-        _session_cache[session_id] = SessionData(session_id=session_id)
+        _session_cache[session_id] = SessionData(
+            session_id=session_id,
+            prefix_matcher=_prefix_matcher,
+            sampling_seed_identity=task_id,
+        )
         _api_key_to_session[session_api_key] = session_id
         _session_to_api_key[session_id] = session_api_key
 
@@ -539,8 +581,11 @@ async def _call_client_create(
                 status_code=410, detail=f"Session {session_id} already ended or expired"
             )
         session_data = _session_cache[session_id]
+        session_data.update_last_access()
 
-    session_data.update_last_access()
+    request_index = (
+        session_data.next_sampling_request_index() if _deterministic_sampling else None
+    )
 
     sig = inspect.signature(create_fn)
     areal_client_ignored_args = ["model"] + (extra_ignored_args or [])
@@ -585,6 +630,22 @@ async def _call_client_create(
     if "top_p" not in kwargs:
         kwargs["top_p"] = 1.0
         _warn_once("top_p not set in request, defaulting to 1.0")
+
+    if (
+        _deterministic_sampling
+        and kwargs.get("seed") is None
+        and "seed" in areal_client_allowed_args
+    ):
+        assert request_index is not None
+        # The logical identity excludes the physical session collision suffix.
+        # Reserve request indices at ingress so concurrent requests remain
+        # distinct without holding a lock during inference.
+        # TODO(agent): Strict mapping of concurrent sibling requests to seeds
+        # requires a stable caller-provided request identity. Group samples use
+        # separate sessions, so their sample_idx-based identities are stable.
+        kwargs["seed"] = _deterministic_sampling_seed(
+            session_data.sampling_seed_identity, request_index
+        )
 
     # Strip stream from request body to prevent it from bypassing the explicit
     # `stream` parameter.  Without this, a request with {"stream": true} would
@@ -689,29 +750,10 @@ async def responses(
 
 def _translate_anthropic_to_openai_request(anthropic_request: dict[str, Any]) -> dict:
     """Translate an Anthropic Messages API request to OpenAI format."""
-    openai_request = _adapter.translate_completion_input_params(
-        anthropic_request.copy()
+    return translate_anthropic_request(
+        anthropic_request,
+        message_preprocessors=_message_preprocessors,
     )
-    if openai_request is None:
-        raise ValueError("Failed to translate request")
-    openai_request = dict(openai_request)
-
-    # Fix message content if it's a list (Anthropic format with content blocks)
-    # LiteLLM's adapter may not properly convert content from list to string
-    # Claude Code CLI sends content as: [{"type":"text","text":"...","cache_control":{...}}, ...]
-    if "messages" in openai_request:
-        for msg in openai_request["messages"]:
-            if isinstance(msg.get("content"), list):
-                # Convert list of content blocks to string
-                text_parts = []
-                for block in msg["content"]:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        text_parts.append(block.get("text", ""))
-                    elif isinstance(block, str):
-                        text_parts.append(block)
-                msg["content"] = "\n".join(text_parts)
-
-    return openai_request
 
 
 async def _safe_stream_wrapper(
@@ -803,11 +845,9 @@ async def anthropic_messages(
             )
 
             # Use LiteLLM's adapter to convert to Anthropic SSE format
-            anthropic_sse_stream = (
-                _adapter.translate_completion_output_params_streaming(
-                    completion_stream=openai_stream,
-                    model=anthropic_request.get("model", "default"),
-                )
+            anthropic_sse_stream = translate_anthropic_stream(
+                openai_stream,
+                model=anthropic_request.get("model", "default"),
             )
 
             # Wrap the stream to handle client disconnection gracefully
@@ -840,21 +880,7 @@ async def anthropic_messages(
 
     # Convert OpenAI response to Anthropic format using LiteLLM's adapter
     try:
-        # Convert ChatCompletion to LitellmModelResponse
-        openai_response_dict = openai_response.model_dump()
-        model_response = LitellmModelResponse(**openai_response_dict)
-        anthropic_response = _adapter.translate_completion_output_params(model_response)
-        if anthropic_response is None:
-            raise ValueError("Failed to translate response")
-
-        # LiteLLM returns Pydantic BaseModel objects in content list,
-        # Convert them to dict.
-        if "content" in anthropic_response and anthropic_response["content"]:
-            anthropic_response["content"] = [
-                block.model_dump() if hasattr(block, "model_dump") else block
-                for block in anthropic_response["content"]
-            ]
-        return Message(**anthropic_response)
+        return translate_anthropic_response(openai_response)
     except Exception as e:
         logger.error(f"Failed to convert OpenAI response to Anthropic format: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to convert response: {e}")
@@ -894,6 +920,7 @@ async def export_trajectories(
     interactions = session_data.export_interactions(
         discount=request.discount,
         style=request.style,
+        drop_retry_orphans=request.drop_retry_orphans,
     )
 
     # Remove session from cache and clean up API key mapping
@@ -1017,10 +1044,11 @@ def main():
         # Run uvicorn directly (blocking)
         uvicorn.run(
             app,
-            host="0.0.0.0",
+            host=_server_host,
             port=_server_port,
             log_level="warning",
             timeout_keep_alive=300,
+            access_log=False,
         )
     except KeyboardInterrupt:
         logger.info("Shutting down proxy rollout server")

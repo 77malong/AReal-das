@@ -39,6 +39,7 @@ class InteractionWithTokenLogpReward:
     # Common
     model_response: ModelResponse | None = None
     reward: float | None = None
+    original_reward: float | None = None
     parent: InteractionWithTokenLogpReward | None = None
     chat_template_type: str = "hf"
     _cache: dict[str, torch.Tensor] | None = None
@@ -151,8 +152,16 @@ class InteractionWithTokenLogpReward:
             parent_logprobs = parent_res["logprobs"].squeeze(0).tolist()
             parent_loss_mask = parent_res["loss_mask"].squeeze(0).tolist()
             parent_versions = parent_res["versions"].squeeze(0).tolist()
+            parent_turn_ids = parent_res["turn_ids"].squeeze(0).tolist()
             parent_len = len(parent_logprobs)
-            assert parent_len == len(parent_loss_mask) == len(parent_versions)
+            assert (
+                parent_len
+                == len(parent_loss_mask)
+                == len(parent_versions)
+                == len(parent_turn_ids)
+            )
+            valid_parent_turn_ids = [tid for tid in parent_turn_ids if tid >= 0]
+            own_turn_id = max(valid_parent_turn_ids) + 1 if valid_parent_turn_ids else 0
             if resp.input_len > parent_len:
                 logprobs = (
                     parent_logprobs
@@ -168,6 +177,11 @@ class InteractionWithTokenLogpReward:
                     parent_versions
                     + [-1] * (resp.input_len - parent_len)
                     + resp.output_versions
+                )
+                turn_ids = (
+                    parent_turn_ids
+                    + [-1] * (resp.input_len - parent_len)
+                    + [own_turn_id] * resp.output_len
                 )
             else:
                 # FIXME: Find out why this happens occasionally
@@ -187,23 +201,68 @@ class InteractionWithTokenLogpReward:
                 logprobs = [0.0] * resp.input_len + resp.output_logprobs
                 loss_mask = [0] * resp.input_len + [1] * resp.output_len
                 versions = [-1] * resp.input_len + resp.output_versions
+                turn_ids = [-1] * resp.input_len + [0] * resp.output_len
         else:
             logprobs = [0.0] * resp.input_len + resp.output_logprobs
             loss_mask = [0] * resp.input_len + [1] * resp.output_len
             versions = [-1] * resp.input_len + resp.output_versions
+            turn_ids = [-1] * resp.input_len + [0] * resp.output_len
         reward = self.reward if self.reward is not None else 0.0
+        original_reward = (
+            self.original_reward if self.original_reward is not None else reward
+        )
         result = dict(
             # unsqueeze to add an additional batch dimension
             input_ids=torch.tensor(seq).unsqueeze(0),
             loss_mask=torch.tensor(loss_mask).unsqueeze(0),
             logprobs=torch.tensor(logprobs).unsqueeze(0),
             versions=torch.tensor(versions).unsqueeze(0),
+            turn_ids=torch.tensor(turn_ids, dtype=torch.int32).unsqueeze(0),
             attention_mask=torch.ones(len(seq), dtype=torch.bool).unsqueeze(0),
             # reward
             rewards=torch.tensor([float(reward)]),
+            original_rewards=torch.tensor([float(original_reward)]),
         )
         self._cache = result
         return result
+
+
+def normalize_group_rewards(
+    results: list[dict[str, InteractionWithTokenLogpReward] | None],
+) -> bool:
+    """Normalize one scalar reward per rollout while preserving raw rewards."""
+    if not results:
+        return False
+
+    reward_per_result: list[float | None] = []
+    for result in results:
+        if not result:
+            reward_per_result.append(None)
+            continue
+        last_id = next(reversed(result))
+        reward_per_result.append(result[last_id].reward)
+
+    if any(reward is None for reward in reward_per_result):
+        return False
+
+    rewards = torch.tensor(reward_per_result, dtype=torch.float32)
+    mean = rewards.mean()
+    std = rewards.std(unbiased=False) if rewards.numel() > 1 else torch.tensor(1.0)
+    normalized_rewards = ((rewards - mean) / (std + 1e-8)).tolist()
+
+    for result, normalized_reward in zip(results, normalized_rewards):
+        assert result is not None
+        for interaction in result.values():
+            if interaction.reward is None:
+                continue
+            interaction.original_reward = interaction.reward
+            interaction.reward = normalized_reward
+            if interaction._cache is not None:
+                interaction._cache["rewards"] = torch.tensor([float(normalized_reward)])
+                interaction._cache["original_rewards"] = torch.tensor(
+                    [float(interaction.original_reward)]
+                )
+    return True
 
 
 def concat_string_interactions(

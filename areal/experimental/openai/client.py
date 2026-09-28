@@ -77,6 +77,99 @@ os.environ["OPENAI_BASE_URL"] = os.environ.get("OPENAI_BASE_URL", "none")
 logger = logging.getLogger("OpenAIClient")
 
 
+def _align_tools_with_sglang(tools_list: list) -> list[dict]:
+    """Round-trip tools through sglang's pydantic Tool model so the dicts
+    fed to ``apply_chat_template`` byte-match what sglang's serving_chat
+    produces on its own ``/v1/chat/completions`` path.
+
+    The goal is behavioral parity with sglang's native route, so a
+    trajectory served here stays reproducible on sglang's own endpoint.
+    Without it the two paths render the ``tools`` block differently (field
+    order and default-field presence, e.g. sglang's ``Function`` dumps
+    ``strict: false`` while LiteLLM omits it). The prompt-token delta this
+    causes is a symptom of the mismatch, not the thing being optimized.
+
+    Assumptions this function cannot verify (see FIXME at the call sites):
+    - Backend is sglang. Call sites only invoke this when the engine class
+      name identifies sglang, so other backends are left unaligned.
+    - The worker venv's sglang version matches the serving version; a skew in
+      disaggregated deployments silently aligns to a stale tool format.
+
+    Behaviour:
+    - sglang not importable → log once, then still normalize shapes (dict
+      conversion and flat→nested) and skip only the pydantic round-trip, so
+      ``apply_chat_template`` always receives nested dicts.
+    - Responses ``FunctionToolParam`` is flat (top-level ``name``/``parameters``
+      and no ``function`` key); it is normalized to the nested Chat shape that
+      both sglang's ``Tool`` model and ``apply_chat_template`` expect before
+      validation.
+    - per-tool validation failure → log + keep that single tool unchanged
+      (partial alignment is still better than no alignment for the rest).
+    - BaseModel inputs are handled via ``model_dump()`` first.
+    """
+
+    def _to_chat_format(t_dict: dict) -> dict:
+        # Flat Responses FunctionToolParam → nested Chat shape. sglang's
+        # Function model drops fields it doesn't declare (e.g. defer_loading),
+        # so the dump still matches the chat-completions path. Chat tools
+        # already nest under ``function`` and pass through unchanged.
+        if (
+            t_dict.get("type") == "function"
+            and "function" not in t_dict
+            and "name" in t_dict
+        ):
+            function = {k: v for k, v in t_dict.items() if k != "type"}
+            return {"type": "function", "function": function}
+        return t_dict
+
+    _SglTool = None
+    try:
+        from sglang.srt.entrypoints.openai.protocol import Tool as _SglTool
+    except Exception as e:
+        if not getattr(_align_tools_with_sglang, "_warned_no_sglang", False):
+            logger.warning(
+                "_align_tools_with_sglang: sglang not importable (%s); tools "
+                "block will diverge from sglang chat-completions path. "
+                "Install sglang in the worker venv to fix this.",
+                e,
+            )
+            _align_tools_with_sglang._warned_no_sglang = True  # type: ignore[attr-defined]
+    aligned: list[dict] = []
+    for t in tools_list:
+        # Accept dict (TypedDict at runtime) and BaseModel.
+        if isinstance(t, BaseModel):
+            t_dict = t.model_dump()
+        elif isinstance(t, Mapping):
+            t_dict = dict(t)
+        else:
+            logger.warning(
+                "_align_tools_with_sglang: tool of type %s is neither dict "
+                "nor BaseModel; passing through unchanged.",
+                type(t).__name__,
+            )
+            aligned.append(t)
+            continue
+        t_dict = _to_chat_format(t_dict)
+        if _SglTool is None:
+            aligned.append(t_dict)
+            continue
+        try:
+            aligned.append(_SglTool(**t_dict).model_dump())
+        except Exception as e:
+            logger.warning(
+                "_align_tools_with_sglang: pydantic Tool validation failed "
+                "for tool %s (%s); passing through unchanged. This will "
+                "cause partial drift from sglang chat-completions path.",
+                t_dict.get("function", {}).get("name", "<unknown>"),
+                e,
+            )
+            aligned.append(t_dict)
+    return aligned
+
+
+_DEFAULT_MAX_TOTAL_TOKENS = 32768
+
+
 def _ensure_message_dict_list(
     name: str,
     value: list[Any],
@@ -343,6 +436,55 @@ def _build_messages_list(item: dict) -> list[dict]:
     return messages_list
 
 
+def _resolve_max_total_tokens(
+    prompt_len: int,
+    max_new_tokens: int,
+    engine_max_tokens: int | None,
+) -> int:
+    # Fall back to a fixed context-length ceiling when the deployment does not
+    # configure engine_max_tokens, so a large client max_tokens cannot push
+    # prompt + generation past the backend model's context window.
+    cap = engine_max_tokens or _DEFAULT_MAX_TOTAL_TOKENS
+    return min(prompt_len + max_new_tokens, cap)
+
+
+def _parse_tool_call_arguments(messages: list[dict]) -> list[dict]:
+    """Return a new message list with tool_call arguments parsed from JSON strings
+    to dicts. Some chat templates (e.g. GLM-5.1) iterate over arguments with
+    .items(), which fails when arguments is a JSON string per OpenAI API convention.
+
+    Only creates new dicts where modifications are needed; unaffected messages
+    are shared with the input list to avoid expensive deep copies.
+    """
+    result = []
+    for msg in messages:
+        tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
+        if not tool_calls:
+            result.append(msg)
+            continue
+        new_tool_calls = []
+        modified = False
+        for tc in tool_calls:
+            fn = tc.get("function") if isinstance(tc, dict) else None
+            if fn is None:
+                new_tool_calls.append(tc)
+                continue
+            args = fn.get("arguments")
+            if isinstance(args, str):
+                try:
+                    parsed = json.loads(args)
+                    tc = {**tc, "function": {**fn, "arguments": parsed}}
+                    modified = True
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            new_tool_calls.append(tc)
+        if modified:
+            result.append({**msg, "tool_calls": new_tool_calls})
+        else:
+            result.append(msg)
+    return result
+
+
 def concat_prompt_token_ids_with_parent(
     message_list: list[dict],
     parent: InteractionWithTokenLogpReward | None,
@@ -385,6 +527,7 @@ def concat_prompt_token_ids_with_parent(
         parent_tokens += [eos_token_id]
 
     all_message_list += message_list
+    all_message_list = _parse_tool_call_arguments(all_message_list)
 
     all_tokens = apply_chat_template(
         tokenizer,
@@ -430,6 +573,7 @@ class AsyncCompletionsWithReward(BaseAsyncCompletions):
         reasoning_parser: str,
         engine_max_tokens: int | None = None,
         chat_template_type: str = "hf",
+        lora_name: str = "",
     ):
         super().__init__(client)
         self.engine = engine
@@ -439,6 +583,7 @@ class AsyncCompletionsWithReward(BaseAsyncCompletions):
         self._cache = cache
         self.engine_max_tokens = engine_max_tokens
         self.chat_template_type = chat_template_type
+        self.lora_name = lora_name
 
     def _build_chat_completion(
         self,
@@ -501,6 +646,7 @@ class AsyncCompletionsWithReward(BaseAsyncCompletions):
         max_total_tokens: int | None | NotGiven = NOT_GIVEN,
         metadata: Metadata | None | NotGiven = NOT_GIVEN,
         n: int | None | NotGiven = NOT_GIVEN,
+        seed: int | None | NotGiven = NOT_GIVEN,
         stop: str | None | list[str] | None | NotGiven = NOT_GIVEN,
         store: bool | None | NotGiven = NOT_GIVEN,
         temperature: float | None | NotGiven = NOT_GIVEN,
@@ -524,6 +670,7 @@ class AsyncCompletionsWithReward(BaseAsyncCompletions):
         max_total_tokens: int | None | NotGiven = NOT_GIVEN,
         metadata: Metadata | None | NotGiven = NOT_GIVEN,
         n: int | None | NotGiven = NOT_GIVEN,
+        seed: int | None | NotGiven = NOT_GIVEN,
         stop: str | None | list[str] | None | NotGiven = NOT_GIVEN,
         store: bool | None | NotGiven = NOT_GIVEN,
         temperature: float | None | NotGiven = NOT_GIVEN,
@@ -546,6 +693,7 @@ class AsyncCompletionsWithReward(BaseAsyncCompletions):
         max_total_tokens: int | None | NotGiven = NOT_GIVEN,
         metadata: Metadata | None | NotGiven = NOT_GIVEN,
         n: int | None | NotGiven = NOT_GIVEN,
+        seed: int | None | NotGiven = NOT_GIVEN,
         stop: str | None | list[str] | None | NotGiven = NOT_GIVEN,
         store: bool | None | NotGiven = NOT_GIVEN,
         temperature: float | None | NotGiven = NOT_GIVEN,
@@ -601,6 +749,15 @@ class AsyncCompletionsWithReward(BaseAsyncCompletions):
             if not isinstance(tools, Iterable):
                 raise TypeError("tools must be an iterable of ChatCompletionToolParam")
             tools_list = list(tools)
+            # FIXME: alignment targets sglang's rendering, so it is only
+            # correct for an sglang backend. Apply it only when the engine is
+            # positively identified as sglang (by class name); any other
+            # backend is left unaligned to avoid aligning to the wrong format
+            # or a misleading "install sglang" hint. A proper fix gates on a
+            # backend identifier exposed by the engine.
+            # See docs/en/tutorial/online_proxy.md.
+            if "sglang" in type(self.engine).__name__.lower():
+                tools_list = _align_tools_with_sglang(tools_list)
 
         image_data, messages_for_tokenizer, vision_messages_for_vllm = (
             _extract_images_from_messages(messages_list)
@@ -608,6 +765,7 @@ class AsyncCompletionsWithReward(BaseAsyncCompletions):
         has_images = len(image_data) > 0
 
         tokenizer_messages = messages_for_tokenizer if has_images else messages_list
+        tokenizer_messages = _parse_tool_call_arguments(tokenizer_messages)
         if self.chat_template_type == "hf":
             prompt_token_ids = apply_chat_template(
                 self.tokenizer,
@@ -718,10 +876,17 @@ class AsyncCompletionsWithReward(BaseAsyncCompletions):
             n_samples=n,
             temperature=temp,
             max_new_tokens=max_new_tokens,
+            max_tokens=_resolve_max_total_tokens(
+                prompt_len=len(prompt_token_ids),
+                max_new_tokens=max_new_tokens,
+                engine_max_tokens=self.engine_max_tokens,
+            ),
             top_p=top_p_val,
             stop=stop_tokens,
             greedy=temp == 0,
             frequency_penalty=frequency_penalty,
+            lora_name=self.lora_name,
+            seed=None if is_omitted(seed) else seed,
             stop_token_ids=list(
                 set([self.tokenizer.eos_token_id, self.tokenizer.pad_token_id])
             ),
@@ -856,9 +1021,17 @@ class AsyncCompletionsWithReward(BaseAsyncCompletions):
                 )
 
             # Tool calls chunks (if any)
+            # Split each tool call into two chunks (name then arguments) to
+            # match standard OpenAI streaming behavior. LiteLLM's Anthropic
+            # streaming adapter treats the first chunk with a function name as
+            # a content_block_start trigger and discards the processed delta
+            # from that same chunk. If name and arguments are combined in a
+            # single chunk, the arguments are lost and Anthropic clients see
+            # input={}.
             if tool_calls:
                 for idx, tool_call in enumerate(tool_calls):
                     tool_call = cast(ChatCompletionMessageFunctionToolCall, tool_call)
+                    # Chunk 1: name + id, with empty arguments.
                     yield ChatCompletionChunk(
                         id=completion_id,
                         choices=[
@@ -871,6 +1044,30 @@ class AsyncCompletionsWithReward(BaseAsyncCompletions):
                                             type="function",
                                             function=ChoiceDeltaToolCallFunction(
                                                 name=tool_call.function.name,
+                                                arguments="",
+                                            ),
+                                        )
+                                    ]
+                                ),
+                                index=0,
+                                finish_reason=None,
+                            )
+                        ],
+                        created=current_time,
+                        model="None",
+                        object="chat.completion.chunk",
+                    )
+                    # Chunk 2: arguments only, emitted as input_json_delta by
+                    # Anthropic adapters after the tool_use block has started.
+                    yield ChatCompletionChunk(
+                        id=completion_id,
+                        choices=[
+                            ChunkChoice(
+                                delta=ChoiceDelta(
+                                    tool_calls=[
+                                        ChoiceDeltaToolCall(
+                                            index=idx,
+                                            function=ChoiceDeltaToolCallFunction(
                                                 arguments=tool_call.function.arguments,
                                             ),
                                         )
@@ -923,6 +1120,7 @@ class AsyncResponsesWithReward(BaseAsyncResponses):
         reasoning_parser: str,
         engine_max_tokens: int | None = None,
         chat_template_type: str = "hf",
+        lora_name: str = "",
     ):
         super().__init__(client)
         self.engine = engine
@@ -932,6 +1130,7 @@ class AsyncResponsesWithReward(BaseAsyncResponses):
         self._cache = cache
         self.engine_max_tokens = engine_max_tokens
         self.chat_template_type = chat_template_type
+        self.lora_name = lora_name
 
     async def create(
         self,
@@ -941,6 +1140,7 @@ class AsyncResponsesWithReward(BaseAsyncResponses):
         instructions: str | None | NotGiven = NOT_GIVEN,
         max_output_tokens: int | None | NotGiven = NOT_GIVEN,
         metadata: Metadata | None | NotGiven = NOT_GIVEN,
+        seed: int | None | NotGiven = NOT_GIVEN,
         tool_choice: response_create_params.ToolChoice | NotGiven = NOT_GIVEN,
         tools: Iterable[ToolParam] | NotGiven = NOT_GIVEN,
         temperature: float | None | NotGiven = NOT_GIVEN,
@@ -1006,6 +1206,15 @@ class AsyncResponsesWithReward(BaseAsyncResponses):
             if not isinstance(tools, Iterable):
                 raise TypeError("tools must be an iterable of ChatCompletionToolParam")
             tools_list = list(tools)
+            # FIXME: alignment targets sglang's rendering, so it is only
+            # correct for an sglang backend. Apply it only when the engine is
+            # positively identified as sglang (by class name); any other
+            # backend is left unaligned to avoid aligning to the wrong format
+            # or a misleading "install sglang" hint. A proper fix gates on a
+            # backend identifier exposed by the engine.
+            # See docs/en/tutorial/online_proxy.md.
+            if "sglang" in type(self.engine).__name__.lower():
+                tools_list = _align_tools_with_sglang(tools_list)
 
         image_data, messages_for_tokenizer, vision_messages_for_vllm = (
             _extract_images_from_messages(messages_list)
@@ -1013,6 +1222,7 @@ class AsyncResponsesWithReward(BaseAsyncResponses):
         has_images = len(image_data) > 0
 
         tokenizer_messages = messages_for_tokenizer if has_images else messages_list
+        tokenizer_messages = _parse_tool_call_arguments(tokenizer_messages)
         if self.chat_template_type == "hf":
             prompt_token_ids = apply_chat_template(
                 self.tokenizer,
@@ -1076,10 +1286,17 @@ class AsyncResponsesWithReward(BaseAsyncResponses):
             n_samples=1,
             temperature=temp,
             max_new_tokens=max_new_tokens,
+            max_tokens=_resolve_max_total_tokens(
+                prompt_len=len(prompt_token_ids),
+                max_new_tokens=max_new_tokens,
+                engine_max_tokens=self.engine_max_tokens,
+            ),
             top_p=top_p_val,
             stop=stop,
             greedy=temp == 0,
             frequency_penalty=frequency_penalty,
+            lora_name=self.lora_name,
+            seed=None if is_omitted(seed) else seed,
             stop_token_ids=list(
                 set([self.tokenizer.eos_token_id, self.tokenizer.pad_token_id])
             ),
@@ -1223,6 +1440,7 @@ class ArealOpenAI(AsyncOpenAI):
         reasoning_parser: str = "qwen3",
         engine_max_tokens: int | None = None,
         chat_template_type: str = "hf",
+        lora_name: str = "",
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -1230,6 +1448,7 @@ class ArealOpenAI(AsyncOpenAI):
         self.tokenizer = tokenizer
         self.tool_call_parser = tool_call_parser
         self.reasoning_parser = reasoning_parser
+        self.lora_name = lora_name
 
         # Use an ordered dict to maintain insertion order of completions/responses
         self._cache: InteractionCache = InteractionCache()
@@ -1244,6 +1463,7 @@ class ArealOpenAI(AsyncOpenAI):
             reasoning_parser=self.reasoning_parser,
             engine_max_tokens=engine_max_tokens,
             chat_template_type=chat_template_type,
+            lora_name=lora_name,
         )
 
         # Override chat.completions with our extended implementation
@@ -1256,6 +1476,7 @@ class ArealOpenAI(AsyncOpenAI):
             reasoning_parser=self.reasoning_parser,
             engine_max_tokens=engine_max_tokens,
             chat_template_type=chat_template_type,
+            lora_name=lora_name,
         )
 
     def get_interaction(self, id: str) -> InteractionWithTokenLogpReward | None:
