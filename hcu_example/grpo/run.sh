@@ -22,7 +22,7 @@ Model/backend discovery:
 
 Training:
   bash run.sh --model=qwen3 --variant=dense --backend=fsdp --rollout=sglang [options]
-  bash run.sh --model=qwen3_8b_fsdp_sglang [options]     # legacy alias
+  bash run.sh --model=qwen3_8b_fsdp_sglang [options]     # legacy alias; variant is inferred
 
 Single-node Ray + training:
   bash run.sh --model=qwen3 --variant=dense --backend=fsdp --rollout=sglang --restart-ray
@@ -43,7 +43,8 @@ Multi-node Ray lifecycle (run on each physical node):
 Options:
   --model=<name>          Model family, e.g. qwen3, or a legacy model key.
                           Legacy <model>_<backend>_sglang names are also accepted.
-  --variant=<name>        Required for training: dense, moe, vl, or vl_moe.
+  --variant=<name>        Required for model families: dense, moe, vl, or vl_moe.
+                           Legacy aliases infer the variant when unambiguous.
   --backend=<name>        Actor backend: fsdp or megatron.
   --rollout=<name>        Rollout backend: sglang or vllm.
   --list                  List family/variant/backend/rollout launchers.
@@ -442,6 +443,7 @@ is_local_ip() {
 MODEL=""
 BACKEND=""
 VARIANT_ARG=""
+MODEL_WAS_LEGACY_ALIAS=0
 ROLLOUT_ARG=""
 SELECTED_SCRIPT=""
 RESOLVED_FAMILY=""
@@ -512,6 +514,26 @@ case "${MODEL}" in
     fi
     BACKEND="${alias_backend}"
     ROLLOUT_ARG="${alias_rollout}"
+    MODEL_WAS_LEGACY_ALIAS=1
+
+    # A legacy key already identifies one launcher.  Infer its variant from
+    # launcher metadata instead of forcing users to repeat --variant.  Keep
+    # an explicitly supplied variant and report a useful conflict below.
+    alias_requested_variant="${VARIANT_ARG}"
+    VARIANT_ARG=""
+    collect_launcher_matches
+    if ((${#MATCHED_FILES[@]} == 1)); then
+      alias_inferred_variant="$(launcher_variant "${MATCHED_FILES[0]}")"
+      if [[ -n "${alias_requested_variant}" &&
+            "${alias_requested_variant}" != "${alias_inferred_variant}" ]]; then
+        echo "[ERROR] Legacy model alias ${alias_name} implies variant=${alias_inferred_variant}," >&2
+        echo "        but --variant=${alias_requested_variant} was supplied." >&2
+        exit 2
+      fi
+      VARIANT_ARG="${alias_requested_variant:-${alias_inferred_variant}}"
+    else
+      VARIANT_ARG="${alias_requested_variant}"
+    fi
     ;;
 esac
 
@@ -580,7 +602,7 @@ fi
 # inspected, so pointing a launcher at the wrong checkpoint fails at load time
 # rather than being silently rerouted here.
 if [[ -n "${MODEL}" ]]; then
-  [[ -n "${VARIANT_ARG}" ]] || {
+  [[ -n "${VARIANT_ARG}" || "${MODEL_WAS_LEGACY_ALIAS}" == 1 ]] || {
     echo "[ERROR] --variant is required. Use dense, moe, vl, or vl_moe." >&2
     echo "        Run: bash run.sh --list" >&2
     exit 2

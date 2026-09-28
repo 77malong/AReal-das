@@ -2182,6 +2182,28 @@ class SGLangConfig:
     enable_memory_saver: bool = False
     allow_auto_truncate: bool = False
     attention_backend: str | None = "fa3"
+    # HCU/SGLang backend configuration.  These options are intentionally kept
+    # in the official v2 SGLangConfig so Hydra structured-config merging and
+    # the v2 launch_server path pass them through to SGLang.
+    nsa_prefill_backend: str | None = None
+    nsa_decode_backend: str | None = None
+    fp8_gemm_backend: str = field(
+        default="auto",
+        metadata={
+            "help": "SGLang blockwise FP8 GEMM backend. "
+            "Passed to SGLang as --fp8-gemm-backend.",
+            "choices": [
+                "auto",
+                "deep_gemm",
+                "flashinfer_trtllm",
+                "flashinfer_cutlass",
+                "flashinfer_deepgemm",
+                "cutlass",
+                "triton",
+                "aiter",
+            ],
+        },
+    )
     enable_deterministic_inference: bool = False
     enable_multimodal: bool = False
     sampling_backend: str | None = None
@@ -2191,6 +2213,7 @@ class SGLangConfig:
     # NOTE: chunked_prefill_size is by default 8192 on GPUs with 80GB mem in SGLang,
     # but we disable it to avoid precision issues
     chunked_prefill_size: int | None = -1
+    page_size: int | None = 64
     max_prefill_tokens: int = 32768
     schedule_policy: str = "lpm"
     schedule_conservativeness: float = 1.0

@@ -184,8 +184,8 @@ CLUSTER_CONFIG=(
 )
 
 DATA_CONFIG=(
-  "+train_dataset.scheduling_spec=null"
-  "+valid_dataset.scheduling_spec=null"
+  "++train_dataset.scheduling_spec=null"
+  "++valid_dataset.scheduling_spec=null"
   "train_dataset.path=${DATASET_PATH}"
   "train_dataset.batch_size=${TRAIN_BATCH_SIZE}"
   "train_dataset.num_workers=0"
@@ -247,8 +247,8 @@ SGLANG_CONFIG=(
   "++sglang.disable_cuda_graph_padding=true"
   "++sglang.disable_overlap_schedule=true"
   "++sglang.attention_backend=${SGLANG_ATTENTION_BACKEND}"
-  "+sglang.fp8_gemm_backend=${SGLANG_FP8_GEMM_BACKEND}"
-  "+sglang.disable_custom_all_reduce=${SGLANG_DISABLE_CUSTOM_ALL_REDUCE:-True}"
+  "++sglang.fp8_gemm_backend=${SGLANG_FP8_GEMM_BACKEND}"
+  "++sglang.disable_custom_all_reduce=${SGLANG_DISABLE_CUSTOM_ALL_REDUCE:-True}"
 )
 
 TRAINER_CONFIG=(

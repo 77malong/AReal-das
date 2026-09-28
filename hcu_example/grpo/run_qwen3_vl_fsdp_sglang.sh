@@ -68,7 +68,7 @@ DATA_CONFIG=(
 ACTOR_CONFIG=(
   "actor.backend=${ACTOR_BACKEND}" "actor.path=${MODEL_PATH}" "actor.dtype=bfloat16"
   "actor.disable_dropout=true" "actor.gradient_checkpointing=true"
-  "+actor.weight_update_mode=${WEIGHT_UPDATE_MODE}"
+  "++actor.weight_update_mode=${WEIGHT_UPDATE_MODE}"
   "actor.optimizer.type=adam" "actor.optimizer.lr=${ACTOR_LR}"
   "actor.mb_spec.max_tokens_per_mb=${ACTOR_MAX_TOKENS_PER_MB}"
   "++actor.attn_impl=${ACTOR_ATTN_IMPL}"
@@ -76,7 +76,7 @@ ACTOR_CONFIG=(
   "++actor.fsdp.offload_params=${FSDP_OFFLOAD_PARAMS}"
 )
 ROLLOUT_CONFIG=(
-  "rollout.backend=${ROLLOUT_BACKEND}" "+rollout.setup_timeout=${ROLLOUT_SETUP_TIMEOUT}"
+  "rollout.backend=${ROLLOUT_BACKEND}" "++rollout.setup_timeout=${ROLLOUT_SETUP_TIMEOUT}"
   "gconfig.n_samples=${N_SAMPLES}" "gconfig.max_new_tokens=${MAX_NEW_TOKENS}"
 )
 SGLANG_CONFIG=(
@@ -87,7 +87,7 @@ SGLANG_CONFIG=(
   "++sglang.page_size=${SGLANG_PAGE_SIZE}"
   "++sglang.disable_radix_cache=True" "++sglang.disable_cuda_graph=True"
   "++sglang.disable_cuda_graph_padding=True" "++sglang.disable_overlap_schedule=True"
-  "+sglang.disable_custom_all_reduce=${SGLANG_DISABLE_CUSTOM_ALL_REDUCE}"
+  "++sglang.disable_custom_all_reduce=${SGLANG_DISABLE_CUSTOM_ALL_REDUCE}"
   "++sglang.attention_backend=${SGLANG_ATTENTION_BACKEND}"
 )
 TRAINER_CONFIG=(

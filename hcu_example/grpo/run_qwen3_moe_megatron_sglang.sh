@@ -69,7 +69,7 @@ ACTOR_CONFIG=(
 ROLLOUT_CONFIG=(
   "rollout.backend=${ROLLOUT_BACKEND}" "rollout.max_concurrent_rollouts=${ROLLOUT_MAX_CONCURRENT}"
   "gconfig.n_samples=${N_SAMPLES}" "gconfig.max_new_tokens=${MAX_NEW_TOKENS}"
-  "+rollout.setup_timeout=${ROLLOUT_SETUP_TIMEOUT}"
+  "++rollout.setup_timeout=${ROLLOUT_SETUP_TIMEOUT}"
 )
 SGLANG_CONFIG=(
   "sglang.model_path=${MODEL_PATH}" "tokenizer_path=${TOKENIZER_PATH}"
@@ -79,7 +79,7 @@ SGLANG_CONFIG=(
   "++sglang.disable_radix_cache=${SGLANG_DISABLE_RADIX_CACHE}" "++sglang.disable_cuda_graph=${SGLANG_DISABLE_CUDA_GRAPH}"
   "++sglang.disable_cuda_graph_padding=True" "++sglang.disable_overlap_schedule=True"
   "++sglang.attention_backend=${SGLANG_ATTENTION_BACKEND}"
-  "+sglang.disable_custom_all_reduce=${SGLANG_DISABLE_CUSTOM_ALL_REDUCE}"
+  "++sglang.disable_custom_all_reduce=${SGLANG_DISABLE_CUSTOM_ALL_REDUCE}"
 )
 TRAINER_CONFIG=(
   "total_train_epochs=${TOTAL_TRAIN_EPOCHS}" "++total_train_steps=${TOTAL_TRAIN_STEPS}"

@@ -146,7 +146,7 @@ DATA_CONFIG=(
   "++valid_dataset.scheduling_spec=null"
   "train_dataset.path=${DATASET_PATH}"
   "valid_dataset.path=${DATASET_PATH}"
-  "+train_dataset.max_length=${TRAIN_MAX_LENGTH}"
+  "++train_dataset.max_length=${TRAIN_MAX_LENGTH}"
   "train_dataset.batch_size=${TRAIN_BATCH_SIZE}"
   "valid_dataset.batch_size=${VALID_BATCH_SIZE}"
 )
@@ -160,9 +160,9 @@ ACTOR_CONFIG=(
   "actor.optimizer.type=adam"
   "actor.optimizer.lr=${ACTOR_LR}"
   "actor.eps_clip=0.2"
-  "+actor.weight_update_mode=${WEIGHT_UPDATE_MODE}"
+  "++actor.weight_update_mode=${WEIGHT_UPDATE_MODE}"
   "actor.mb_spec.max_tokens_per_mb=${ACTOR_MAX_TOKENS_PER_MB}"
-  "+actor.mb_spec.packing_algorithm=ffd"
+  "++actor.mb_spec.packing_algorithm=ffd"
   "++actor.mask_no_eos_with_zero=True"
   "++actor.attn_impl=${ACTOR_ATTN_IMPL}"
   "++actor.fsdp.memory_efficient_load=${FSDP_MEMORY_EFFICIENT_LOAD}"
@@ -174,7 +174,7 @@ ROLLOUT_CONFIG=(
   "rollout.max_concurrent_rollouts=${ROLLOUT_MAX_CONCURRENT}"
   "gconfig.n_samples=${N_SAMPLES}"
   "gconfig.max_new_tokens=${MAX_NEW_TOKENS}"
-  "+rollout.setup_timeout=${ROLLOUT_SETUP_TIMEOUT}"
+  "++rollout.setup_timeout=${ROLLOUT_SETUP_TIMEOUT}"
 )
 
 SGLANG_CONFIG=(
@@ -195,7 +195,7 @@ SGLANG_CONFIG=(
   "++sglang.disable_radix_cache=${SGLANG_DISABLE_RADIX_CACHE}"
   "++sglang.disable_cuda_graph=${SGLANG_DISABLE_CUDA_GRAPH}"
   "++sglang.attention_backend=${SGLANG_ATTENTION_BACKEND}"
-  "+sglang.disable_custom_all_reduce=${SGLANG_DISABLE_CUSTOM_ALL_REDUCE}"
+  "++sglang.disable_custom_all_reduce=${SGLANG_DISABLE_CUSTOM_ALL_REDUCE}"
   "++sglang.enable_nan_detection=${SGLANG_ENABLE_NAN_DETECTION}"
 )
 

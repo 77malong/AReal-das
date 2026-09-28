@@ -187,8 +187,8 @@ CLUSTER_CONFIG=(
 )
 
 DATA_CONFIG=(
-  "+train_dataset.scheduling_spec=null"
-  "+valid_dataset.scheduling_spec=null"
+  "++train_dataset.scheduling_spec=null"
+  "++valid_dataset.scheduling_spec=null"
   "train_dataset.path=${DATASET_PATH}"
   "train_dataset.batch_size=${TRAIN_BATCH_SIZE}"
   "train_dataset.num_workers=0"
@@ -242,8 +242,8 @@ SGLANG_CONFIG=(
   "sglang.context_length=${SGLANG_CONTEXT_LENGTH}"
   "sglang.max_running_requests=${SGLANG_MAX_RUNNING_REQUESTS}"
   "++sglang.kv_cache_dtype=${SGLANG_KV_CACHE_DTYPE}"
-  "+sglang.nsa_prefill_backend=flashmla_auto"
-  "+sglang.nsa_decode_backend=flashmla_kv"
+  "++sglang.nsa_prefill_backend=flashmla_auto"
+  "++sglang.nsa_decode_backend=flashmla_kv"
   "++sglang.chunked_prefill_size=${SGLANG_CHUNKED_PREFILL_SIZE}"
   "++sglang.page_size=${SGLANG_PAGE_SIZE}"
   "++sglang.disable_radix_cache=true"

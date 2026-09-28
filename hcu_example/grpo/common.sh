@@ -13,6 +13,15 @@ GRPO_ENTRYPOINT="${GRPO_ENTRYPOINT:-examples/math/gsm8k_rl.py}"
 GRPO_CONFIG="${GRPO_CONFIG:-examples/math/gsm8k_grpo.yaml}"
 CLEAN_BEFORE_TRAIN="${CLEAN_BEFORE_TRAIN:-1}"
 
+# All HCU GRPO launchers use the official controller v2 stack.  Keep these
+# overrides in the shared launch function so every model launcher gets the
+# same actor/rollout version pair and cannot accidentally run a mixed v1/v2
+# configuration.
+CONTROLLER_V2_CONFIG=(
+  "actor._version=v2"
+  "rollout._version=v2"
+)
+
 _grpo_default_host_ip() {
   hostname -I 2>/dev/null | awk '{print $1}'
 }
@@ -167,7 +176,7 @@ grpo_launch() {
   local -a overrides=("$@")
   set +e
   "${PYTHON_BIN}" "${GRPO_ENTRYPOINT}" --config "${GRPO_CONFIG}" \
-    "${overrides[@]}" 2>&1 | tee "${LOG_FILE}"
+    "${overrides[@]}" "${CONTROLLER_V2_CONFIG[@]}" 2>&1 | tee "${LOG_FILE}"
   local status=${PIPESTATUS[0]}
   set -e
   echo
