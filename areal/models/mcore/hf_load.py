@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
-# Modified by Hygon Information Technology Co., Ltd., 2026.
 
 import json
 import os
@@ -251,7 +249,6 @@ def _slice_generic_weight(
     hf_weights_safe_slice: list,
     tp_rank: int,
     tp_size: int,
-    mcore_weights_name: str = "<unknown>",
 ) -> torch.Tensor | FP8BlockwiseTensorHelper:
     """Slice generic weight tensor based on shape mismatch."""
     assert len(hf_weights_safe_slice) == 1
@@ -424,11 +421,7 @@ def _weight_to_mcore_tp(
         else:
             # Single fc1 weight (e.g., vision encoder MLP without gate/up split)
             res = _slice_generic_weight(
-                mcore_param_shape,
-                hf_weights_safe_slice,
-                tp_rank,
-                tp_size,
-                mcore_weights_name=mcore_weights_name,
+                mcore_param_shape, hf_weights_safe_slice, tp_rank, tp_size
             )
     elif "mlp.experts.linear_fc2.weight" in mcore_weights_name:
         if (
@@ -449,11 +442,7 @@ def _weight_to_mcore_tp(
             res = _slice_moe_expert_weight(hf_weights_safe_slice, tp_rank, tp_size)
     else:
         res = _slice_generic_weight(
-            mcore_param_shape,
-            hf_weights_safe_slice,
-            tp_rank,
-            tp_size,
-            mcore_weights_name=mcore_weights_name,
+            mcore_param_shape, hf_weights_safe_slice, tp_rank, tp_size
         )
 
     if dtype is not None and not isinstance(res, FP8BlockwiseTensorHelper):
