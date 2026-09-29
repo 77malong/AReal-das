@@ -18,8 +18,8 @@ CLEAN_BEFORE_TRAIN="${CLEAN_BEFORE_TRAIN:-1}"
 # same actor/rollout version pair and cannot accidentally run a mixed v1/v2
 # configuration.
 CONTROLLER_V2_CONFIG=(
-  "actor._version=v2"
-  "rollout._version=v2"
+  "+actor._version=v2"
+  "+rollout._version=v2"
 )
 
 _grpo_default_host_ip() {
