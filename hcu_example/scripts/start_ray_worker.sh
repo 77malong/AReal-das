@@ -26,7 +26,7 @@ if [[ -z "${WORKER_IP}" ]]; then
 fi
 
 if [[ "${STOP_EXISTING_RAY}" == "1" ]]; then
-  ray stop -f || true
+  areal_ray stop -f || true
 fi
 
 ray_args=(
@@ -50,12 +50,13 @@ echo "[INFO] Joining Ray cluster ${HEAD_IP}:${RAY_PORT} from ${WORKER_IP} with $
 echo "[INFO] RAY_TMPDIR=${RAY_TMPDIR}"
 echo "[INFO] AREAL_ENV_PROFILE=${AREAL_ENV_PROFILE}"
 echo "[INFO] PYTHON_BIN=${PYTHON_BIN}"
+echo "[INFO] RAY_BIN=${RAY_BIN}"
 echo "[INFO] PYTHONPATH=${PYTHONPATH}"
 echo "[INFO] SGLANG_HOME=${SGLANG_HOME}"
-ray start "${ray_args[@]}"
+areal_ray start "${ray_args[@]}"
 
 export RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}"
-ray status --address="${RAY_ADDRESS}"
+areal_ray status --address="${RAY_ADDRESS}"
 echo "[INFO] Validating Ray worker environments across the cluster..."
 areal_validate_ray_worker_env
 echo "[OK] Worker joined and cluster environment validated: ${WORKER_IP} -> ${RAY_ADDRESS}"

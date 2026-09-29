@@ -59,6 +59,7 @@ python -m pip install -e . --no-deps
 - [中文快速开始](../docs/zh/tutorial/quickstart.md)
 - [AReaL-das 示例说明](README.md)
 
-运行前需要准备模型目录（例如 `/model/qwen3/Qwen3-8B`）、Python 虚拟环境、`hcu_megatron` 和 SGLang 源码路径。
+运行前需要准备模型目录（例如 `/model/qwen3/Qwen3-8B`）、Python 环境（可以是
+`/usr/local/bin/python` 等系统解释器，也可以是虚拟环境）、`hcu_megatron` 和 SGLang 源码路径。
 
 版权：Copyright (c) 2026 Hygon Information Technology Co., Ltd.

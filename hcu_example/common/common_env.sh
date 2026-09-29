@@ -39,20 +39,112 @@ fi
 export AREAL_ROOT="${AREAL_ROOT:-${AREAL_HOME}}"
 export BASE_DIR="${BASE_DIR:-$(cd "${AREAL_HOME}/.." && pwd)}"
 
-# VENV is the canonical variable. VENV_PATH is accepted as an alias so either
-# of the following works before sourcing this file:
+# Capture caller-provided values before DTK is sourced.  DTK may provide
+# defaults, but it must not silently override an explicitly selected Python
+# environment.
+_AREAL_INPUT_PYTHON_BIN="${PYTHON_BIN:-}"
+_AREAL_INPUT_VENV="${VENV:-}"
+_AREAL_INPUT_VENV_PATH="${VENV_PATH:-}"
+
+# DTK environment can also be moved/overridden without editing this file.
+export DTK_ENV="${DTK_ENV:-/opt/dtk/env.sh}"
+if [[ -f "${DTK_ENV}" ]]; then
+  # shellcheck disable=SC1091
+  source "${DTK_ENV}"
+fi
+
+# Preserve DTK-provided values as fallbacks when the caller did not specify a
+# Python environment explicitly.
+_AREAL_DTK_PYTHON_BIN="${PYTHON_BIN:-}"
+_AREAL_DTK_VENV="${VENV:-}"
+_AREAL_DTK_VENV_PATH="${VENV_PATH:-}"
+
+# PYTHON_BIN is the authoritative interpreter when it is supplied by the
+# caller. VENV is kept as a backwards-compatible input for existing launchers;
+# VENV_PATH is accepted as its alias.
 #
+#   export PYTHON_BIN=/usr/local/bin/python
 #   export VENV=<VENV_PATH>
 #   export VENV_PATH=<VENV_PATH>
-if [[ -n "${VENV:-}" ]]; then
-  :
-elif [[ -n "${VENV_PATH:-}" ]]; then
-  export VENV="${VENV_PATH}"
+if [[ -n "${_AREAL_INPUT_PYTHON_BIN}" ]]; then
+  export PYTHON_BIN="${_AREAL_INPUT_PYTHON_BIN}"
+  if [[ "${PYTHON_BIN}" != */* ]]; then
+    export PYTHON_BIN="$(command -v "${PYTHON_BIN}" 2>/dev/null || true)"
+  fi
+elif [[ -n "${_AREAL_INPUT_VENV}" ]]; then
+  export VENV="${_AREAL_INPUT_VENV}"
+  export PYTHON_BIN="${VENV}/bin/python"
+elif [[ -n "${_AREAL_INPUT_VENV_PATH}" ]]; then
+  export VENV="${_AREAL_INPUT_VENV_PATH}"
+  export PYTHON_BIN="${VENV}/bin/python"
+elif [[ -n "${_AREAL_DTK_PYTHON_BIN}" ]]; then
+  export PYTHON_BIN="${_AREAL_DTK_PYTHON_BIN}"
+  if [[ "${PYTHON_BIN}" != */* ]]; then
+    export PYTHON_BIN="$(command -v "${PYTHON_BIN}" 2>/dev/null || true)"
+  fi
+elif [[ -n "${_AREAL_DTK_VENV}" ]]; then
+  export VENV="${_AREAL_DTK_VENV}"
+  export PYTHON_BIN="${VENV}/bin/python"
+elif [[ -n "${_AREAL_DTK_VENV_PATH}" ]]; then
+  export VENV="${_AREAL_DTK_VENV_PATH}"
+  export PYTHON_BIN="${VENV}/bin/python"
 else
   export VENV="${AREAL_HOME}/.venv"
+  if [[ -x "${VENV}/bin/python" ]]; then
+    export PYTHON_BIN="${VENV}/bin/python"
+  else
+    export VENV=""
+    export PYTHON_BIN="$(command -v python 2>/dev/null || command -v python3 2>/dev/null || true)"
+  fi
 fi
 export VENV_PATH="${VENV}"
-export PYTHON_BIN="${PYTHON_BIN:-${VENV}/bin/python}"
+unset _AREAL_INPUT_PYTHON_BIN _AREAL_INPUT_VENV _AREAL_INPUT_VENV_PATH
+unset _AREAL_DTK_PYTHON_BIN _AREAL_DTK_VENV _AREAL_DTK_VENV_PATH
+
+if [[ -z "${PYTHON_BIN}" || ! -x "${PYTHON_BIN}" ]]; then
+  echo "[ERROR] Required Python not found: ${PYTHON_BIN:-<unset>}" >&2
+  return 1 2>/dev/null || exit 1
+fi
+
+_AREAL_PYTHON_INFO="$("${PYTHON_BIN}" - <<'PYTHON_INFO'
+import sys
+import sysconfig
+
+print(sys.executable)
+print(sys.prefix)
+print(sys.base_prefix)
+print(sysconfig.get_path("scripts"))
+PYTHON_INFO
+)" || {
+  echo "[ERROR] Failed to inspect Python interpreter: ${PYTHON_BIN}" >&2
+  return 1 2>/dev/null || exit 1
+}
+mapfile -t _AREAL_PYTHON_INFO_LINES <<<"${_AREAL_PYTHON_INFO}"
+export PYTHON_EXECUTABLE="${_AREAL_PYTHON_INFO_LINES[0]}"
+export PYTHON_ENV_PREFIX="${_AREAL_PYTHON_INFO_LINES[1]}"
+export PYTHON_BASE_PREFIX="${_AREAL_PYTHON_INFO_LINES[2]}"
+export PYTHON_SCRIPTS_DIR="${_AREAL_PYTHON_INFO_LINES[3]}"
+unset _AREAL_PYTHON_INFO _AREAL_PYTHON_INFO_LINES
+
+if [[ "${PYTHON_ENV_PREFIX}" != "${PYTHON_BASE_PREFIX}" ]]; then
+  export PYTHON_ENV_KIND="virtualenv"
+  if [[ -z "${VENV}" ]]; then
+    export VENV="${PYTHON_ENV_PREFIX}"
+    export VENV_PATH="${VENV}"
+  elif [[ "${VENV}" != "${PYTHON_ENV_PREFIX}" ]]; then
+    echo "[WARN] PYTHON_BIN=${PYTHON_BIN} is from ${PYTHON_ENV_PREFIX}, ignoring VENV=${VENV}." >&2
+    export VENV="${PYTHON_ENV_PREFIX}"
+    export VENV_PATH="${VENV}"
+  fi
+else
+  export PYTHON_ENV_KIND="system"
+  if [[ -n "${VENV}" ]]; then
+    echo "[WARN] PYTHON_BIN=${PYTHON_BIN} is not a virtualenv interpreter; ignoring VENV=${VENV}." >&2
+  fi
+  export VENV=""
+  export VENV_PATH=""
+  unset VIRTUAL_ENV || true
+fi
 
 # MEGATRON_HOME is the root directory of the Megatron-LM-das repository.
 # The repositories are stored below:
@@ -111,18 +203,6 @@ else
   export SGLANG_HOME="${SGLANG_ROOT}/python"
 fi
 
-# DTK environment can also be moved/overridden without editing this file.
-export DTK_ENV="${DTK_ENV:-/opt/dtk/env.sh}"
-if [[ -f "${DTK_ENV}" ]]; then
-  # shellcheck disable=SC1091
-  source "${DTK_ENV}"
-fi
-
-if [[ ! -x "${PYTHON_BIN}" ]]; then
-  echo "[ERROR] Required Python not found: ${PYTHON_BIN}" >&2
-  return 1 2>/dev/null || exit 1
-fi
-
 if [[ ! -d "${MEGATRON_LM_HOME}" ]]; then
   echo "[ERROR] Megatron-LM not found: ${MEGATRON_LM_HOME}" >&2
   return 1 2>/dev/null || exit 1
@@ -141,17 +221,27 @@ if [[ ! -d "${SGLANG_HOME}/sglang" ]]; then
   return 1 2>/dev/null || exit 1
 fi
 
-# Activate the resolved virtualenv before Ray starts.  Because VENV can be
-# exported before sourcing this file, Ray head/worker and the training driver
-# all use the same caller-selected Python environment.
-# shellcheck disable=SC1090
-source "${VENV}/bin/activate"
+# Activate a virtualenv only when the selected interpreter belongs to one.
+# System Python has no activate script and must not depend on a placeholder VENV.
+if [[ "${PYTHON_ENV_KIND}" == "virtualenv" ]]; then
+  if [[ ! -f "${VENV}/bin/activate" ]]; then
+    echo "[ERROR] Python virtualenv activation script not found: ${VENV}/bin/activate" >&2
+    return 1 2>/dev/null || exit 1
+  fi
+  # shellcheck disable=SC1090
+  source "${VENV}/bin/activate"
+fi
 
 # Rebuild PYTHONPATH from the resolved source variables.  We intentionally do
 # not append an inherited PYTHONPATH here: stale SGLang/Megatron/AReaL trees are
 # a frequent source of mixed installations inside Ray workers.  If an extra
 # source directory is intentionally required, put it in AREAL_EXTRA_PYTHONPATH.
-export PATH="${VENV}/bin:${PATH}"
+export PATH="${PYTHON_SCRIPTS_DIR}:${PATH}"
+if [[ -x "${PYTHON_SCRIPTS_DIR}/ray" ]]; then
+  export RAY_BIN="${PYTHON_SCRIPTS_DIR}/ray"
+else
+  export RAY_BIN=""
+fi
 _AREAL_PYTHONPATH_PARTS=(
   "${MEGATRON_HOME}"
   "${HCU_MEGATRON_HOME}"
@@ -166,6 +256,16 @@ if [[ -n "${AREAL_EXTRA_PYTHONPATH:-}" ]]; then
 fi
 export PYTHONPATH="$(IFS=:; echo "${_AREAL_PYTHONPATH_PARTS[*]}")"
 unset _AREAL_PYTHONPATH_PARTS
+
+# Always invoke Ray from the selected Python environment. This prevents the Ray
+# console script from coming from a different virtualenv or system install.
+areal_ray() {
+  if [[ -z "${RAY_BIN}" ]]; then
+    echo "[ERROR] Ray executable not found in Python scripts directory: ${PYTHON_SCRIPTS_DIR}" >&2
+    return 1
+  fi
+  "${RAY_BIN}" "$@"
+}
 
 # Ray-managed examples must not inherit a global device mask. Local scheduler
 # examples set AREAL_RAY_MANAGED_DEVICES=0 before sourcing this file.
@@ -420,12 +520,18 @@ areal_preflight_common() {
 
   echo "===== AReaL HCU preflight ====="
 
-  for dir in \
-    "${AREAL_HOME}" \
-    "${MEGATRON_LM_HOME}" \
-    "${MEGATRON_BRIDGE_HOME}/src" \
-    "${SGLANG_HOME}/sglang" \
-    "${VENV}"
+  local -a required_paths=(
+    "${AREAL_HOME}"
+    "${MEGATRON_LM_HOME}"
+    "${MEGATRON_BRIDGE_HOME}/src"
+    "${MEGATRON_ENERGON_HOME}"
+    "${SGLANG_HOME}/sglang"
+  )
+  if [[ -n "${VENV}" ]]; then
+    required_paths+=("${VENV}")
+  fi
+
+  for dir in "${required_paths[@]}"
   do
     if [[ ! -e "${dir}" ]]; then
       echo "[ERROR] Required path does not exist: ${dir}" >&2
@@ -433,12 +539,21 @@ areal_preflight_common() {
     fi
   done
 
-  for cmd in ray hostname awk sed grep; do
+  for cmd in hostname awk sed grep; do
     if ! command -v "${cmd}" >/dev/null 2>&1; then
       echo "[ERROR] Required command not found in PATH: ${cmd}" >&2
       failed=1
     fi
   done
+
+  if ! "${PYTHON_BIN}" -c 'import ray' >/dev/null 2>&1; then
+    echo "[ERROR] Ray cannot be imported by PYTHON_BIN=${PYTHON_BIN}" >&2
+    failed=1
+  fi
+  if [[ -z "${RAY_BIN}" || ! -x "${RAY_BIN}" ]]; then
+    echo "[ERROR] Ray executable not found for PYTHON_BIN=${PYTHON_BIN}" >&2
+    failed=1
+  fi
 
   if [[ ! -e /dev/kfd ]]; then
     echo "[ERROR] /dev/kfd is not visible. Start the container with --device=/dev/kfd." >&2
@@ -485,20 +600,27 @@ PY_INNER
 }
 
 # Lightweight validation helper. It verifies that driver and Ray daemons can
-# resolve the intended virtualenv and source trees without importing SGLang's
+# resolve the intended Python environment and source trees without importing SGLang's
 # heavy runtime/plugin stack.
 areal_print_python_env() {
-  echo "VENV:            ${VENV}"
+  echo "Python env:      ${PYTHON_ENV_KIND}"
   echo "Python:          ${PYTHON_BIN}"
+  echo "Python resolved: ${PYTHON_EXECUTABLE}"
+  echo "Python prefix:   ${PYTHON_ENV_PREFIX}"
+  echo "Python scripts:  ${PYTHON_SCRIPTS_DIR}"
+  echo "VENV:            ${VENV}"
   echo "AReaL:           ${AREAL_HOME}"
   echo "Megatron root:   ${MEGATRON_HOME}"
   echo "Megatron-LM:     ${MEGATRON_LM_HOME}"
   echo "Megatron-Bridge: ${MEGATRON_BRIDGE_HOME}"
   echo "SGLang source:   ${SGLANG_HOME}"
-  echo "Ray:             $(command -v ray 2>/dev/null || echo not-found)"
+  echo "Ray:             ${RAY_BIN:-not-found}"
   "${PYTHON_BIN}" - <<'PY'
-import os, sys
+import os
+import sys
 print("sys.executable:  ", sys.executable)
+print("sys.prefix:      ", sys.prefix)
+print("sys.base_prefix: ", sys.base_prefix)
 print("PYTHONPATH:      ", os.environ.get("PYTHONPATH", ""))
 try:
     import torch
@@ -535,7 +657,7 @@ areal_save_env_snapshot() {
     echo "---- selected environment ----"
     for name in \
       AREAL_ENV_PROFILE AREAL_EXAMPLES_ROOT AREAL_HOME AREAL_ROOT BASE_DIR \
-      VENV VENV_PATH PYTHON_BIN DTK_ENV \
+      VENV VENV_PATH PYTHON_BIN PYTHON_EXECUTABLE PYTHON_ENV_KIND PYTHON_ENV_PREFIX PYTHON_BASE_PREFIX PYTHON_SCRIPTS_DIR RAY_BIN DTK_ENV \
       MEGATRON_HOME MEGATRON_ROOT MEGATRON_3RDPARTY_HOME MEGATRON_LM_HOME MEGATRON_BRIDGE_HOME MEGATRON_ENERGON_HOME HCU_MEGATRON_HOME SGLANG_HOME SGLANG_ROOT AREAL_EXTRA_PYTHONPATH \
       PATH PYTHONPATH \
       CUDA_VISIBLE_DEVICES HIP_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES \
@@ -571,7 +693,9 @@ areal_validate_ray_worker_env() {
     return 2
   }
 
-  EXPECTED_VENV="${VENV}" \
+  EXPECTED_PYTHON_EXECUTABLE="${PYTHON_EXECUTABLE}" \
+  EXPECTED_PYTHON_ENV_KIND="${PYTHON_ENV_KIND}" \
+  EXPECTED_PYTHON_ENV_PREFIX="${PYTHON_ENV_PREFIX}" \
   EXPECTED_SGLANG_HOME="${SGLANG_HOME}" \
   EXPECTED_MEGATRON_LM="${MEGATRON_LM_HOME}" \
   EXPECTED_AREAL_ENV_PROFILE="${AREAL_ENV_PROFILE}" \
@@ -597,7 +721,9 @@ import sys
 import ray
 
 address = os.environ["RAY_ADDRESS"]
-expected_venv = pathlib.Path(os.environ["EXPECTED_VENV"]).absolute()
+expected_python = pathlib.Path(os.environ["EXPECTED_PYTHON_EXECUTABLE"]).resolve()
+expected_python_kind = os.environ["EXPECTED_PYTHON_ENV_KIND"]
+expected_python_prefix = pathlib.Path(os.environ["EXPECTED_PYTHON_ENV_PREFIX"]).resolve()
 expected_sglang = pathlib.Path(os.environ["EXPECTED_SGLANG_HOME"]).resolve()
 expected_megatron_lm = pathlib.Path(os.environ["EXPECTED_MEGATRON_LM"]).resolve()
 
@@ -609,6 +735,8 @@ def probe():
     return {
         "host": socket.gethostname(),
         "python": sys.executable,
+        "python_env_kind": "virtualenv" if sys.prefix != sys.base_prefix else "system",
+        "python_prefix": sys.prefix,
         "pythonpath": os.environ.get("PYTHONPATH", ""),
         "sys_path": list(sys.path),
         "sglang_spec": None if spec is None else spec.origin,
@@ -677,7 +805,7 @@ expected_selected_env = {
 errors = []
 for r in results:
     print("Ray worker env:", r)
-    exe = pathlib.Path(r["python"]).absolute()
+    exe = pathlib.Path(r["python"]).resolve()
     paths = []
     for x in r["sys_path"]:
         if not x:
@@ -687,11 +815,18 @@ for r in results:
         except Exception:
             pass
 
-    try:
-        exe.relative_to(expected_venv)
-    except ValueError:
+    if exe != expected_python:
         errors.append(
-            f"node {r['requested_node']}: python={exe} is not under VENV={expected_venv}"
+            f"node {r['requested_node']}: python={exe}, expected {expected_python}"
+        )
+    actual_prefix = pathlib.Path(r["python_prefix"]).resolve()
+    if r["python_env_kind"] != expected_python_kind:
+        errors.append(
+            f"node {r['requested_node']}: python environment={r['python_env_kind']!r}, expected {expected_python_kind!r}"
+        )
+    if actual_prefix != expected_python_prefix:
+        errors.append(
+            f"node {r['requested_node']}: python prefix={actual_prefix}, expected {expected_python_prefix}"
         )
 
     if expected_sglang not in paths:
@@ -717,7 +852,7 @@ if errors:
     print("[ERROR] Ray worker Python environment mismatch:")
     for e in errors:
         print("  -", e)
-    print("Ray was started from a different environment. Stop and restart Ray on every node with the same AREAL_ENV_PROFILE and this examples package.")
+    print("Ray was started from a different Python environment. Stop and restart Ray on every node with the same PYTHON_BIN and this examples package.")
     print("Single-node example:")
     print("  AREAL_ENV_PROFILE=%s bash scripts/stop_ray.sh" % os.environ.get("EXPECTED_AREAL_ENV_PROFILE", "qwen"))
     print("  AREAL_ENV_PROFILE=%s NUM_GPUS=8 NUM_CPUS=128 bash scripts/start_ray.sh <HEAD_IP>" % os.environ.get("EXPECTED_AREAL_ENV_PROFILE", "qwen"))

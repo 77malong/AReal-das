@@ -11,7 +11,7 @@ CLEAN_NAME_RESOLVE="${CLEAN_NAME_RESOLVE:-1}"
 STOP_RAY="${STOP_RAY:-0}"
 
 if [[ "${STOP_RAY}" == "1" ]]; then
-  ray stop -f || true
+  areal_ray stop -f || true
 fi
 
 pkill -TERM -f 'python(3)? -m areal\.infra\.rpc\.(guard|rpc_server)' || true

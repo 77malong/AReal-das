@@ -21,7 +21,7 @@ if [[ -z "${NODE_IP}" ]]; then
 fi
 
 if [[ "${STOP_EXISTING_RAY}" == "1" ]]; then
-  ray stop -f || true
+  areal_ray stop -f || true
 fi
 
 ray_args=(
@@ -46,13 +46,14 @@ echo "[INFO] Starting Ray head ${NODE_IP}:${RAY_PORT} with ${NUM_GPUS} GPUs, ${N
 echo "[INFO] RAY_TMPDIR=${RAY_TMPDIR}"
 echo "[INFO] AREAL_ENV_PROFILE=${AREAL_ENV_PROFILE}"
 echo "[INFO] PYTHON_BIN=${PYTHON_BIN}"
+echo "[INFO] RAY_BIN=${RAY_BIN}"
 echo "[INFO] PYTHONPATH=${PYTHONPATH}"
 echo "[INFO] SGLANG_HOME=${SGLANG_HOME}"
-ray start "${ray_args[@]}"
+areal_ray start "${ray_args[@]}"
 
 sleep 3
 export RAY_ADDRESS="${NODE_IP}:${RAY_PORT}"
-ray status --address="${RAY_ADDRESS}"
+areal_ray status --address="${RAY_ADDRESS}"
 
 if [[ "${VALIDATE_RAY_WORKER_ENV}" == "1" ]]; then
   echo "[INFO] Validating Ray worker environment inherited from the head daemon..."

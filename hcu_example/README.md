@@ -56,10 +56,15 @@ Megatron-Bridge。多节点情况下，模型目录、实验输出目录以及 n
 
 或其他共享文件系统，应先确认各节点都能正常读写。
 
+Python 环境支持两种方式：使用系统 Python 时设置 `PYTHON_BIN`，不需要创建或激活
+`VENV`；继续使用虚拟环境时可以设置 `VENV` 或 `VENV_PATH`。多节点必须使用相同的
+Python 解释器路径和依赖版本。
+
 建议至少准备以下路径：
 
 ```text
-<VENV_PATH>               Python 3.11 虚拟环境
+<PYTHON_BIN>              Python 3.11 解释器，例如 /usr/local/bin/python
+<VENV_PATH>               可选的 Python 3.11 虚拟环境
 <AREAL_HOME>               HCU_AReaL 源码根目录
 <MEGATRON_HOME>            hcu_megatron 根目录
 <SGLANG_ROOT>              SGLang 源码根目录
@@ -101,8 +106,9 @@ bash run.sh \
 | --------------------------------- | --------------------------------------------------------- |
 | `AREAL_HOME`                      | AReaL 仓库根目录                                          |
 | `AREAL_ROOT`                      | AReaL 源码根目录，通常与 `AREAL_HOME` 相同                |
-| `VENV` / `VENV_PATH`              | Python 虚拟环境                                           |
-| `PYTHON_BIN`                      | Ray worker 和训练使用的 Python                            |
+| `PYTHON_BIN`                      | Ray、worker 和训练使用的 Python 解释器（优先级最高）       |
+| `VENV` / `VENV_PATH`              | 可选的 Python 虚拟环境；未设置 `PYTHON_BIN` 时兼容使用     |
+| `PYTHON_ENV_KIND`                 | 自动识别的 `system` 或 `virtualenv`                       |
 | `MEGATRON_HOME` / `MEGATRON_ROOT` | HCU Megatron 源码根目录                                   |
 | `SGLANG_ROOT`                     | SGLang 仓库根目录                                         |
 | `SGLANG_HOME`                     | SGLang Python 源码目录，一般为 `<SGLANG_ROOT>/python`     |
@@ -415,7 +421,8 @@ ______________________________________________________________________
 首先进入环境并查看模型：
 
 ```bash
-source <VENV_PATH>/bin/activate
+# 系统 Python；使用虚拟环境时改为：export VENV=<VENV_PATH>
+export PYTHON_BIN=/usr/local/bin/python
 cd <AREAL_HOME>/hcu_example/grpo
 bash run.sh --model=qwen3 --variant=dense --backends
 bash run.sh --model=qwen3 --variant=dense --backend=fsdp --rollout=sglang --info
@@ -504,7 +511,8 @@ head 使用一个模型路径、worker 使用另一个路径。
 在 head 节点执行：
 
 ```bash
-source <VENV_PATH>/bin/activate
+# 系统 Python；head 和 worker 必须使用同一解释器配置
+export PYTHON_BIN=/usr/local/bin/python
 cd <AREAL_HOME>/hcu_example/grpo
 bash run.sh \
   --ray-head \
@@ -519,7 +527,8 @@ bash run.sh \
 在 worker 节点执行：
 
 ```bash
-source <VENV_PATH>/bin/activate
+# 与 head 节点保持一致，例如：export PYTHON_BIN=/usr/local/bin/python
+export PYTHON_BIN=/usr/local/bin/python
 cd <AREAL_HOME>/hcu_example/grpo
 bash run.sh \
   --ray-worker \
@@ -715,7 +724,7 @@ bash scripts/check_env.sh
 也可以手工检查：
 
 ```bash
-<VENV_PATH>/bin/python - <<'PY'
+${PYTHON_BIN:-/usr/local/bin/python} - <<'PY'
 import torch
 import areal
 import sglang

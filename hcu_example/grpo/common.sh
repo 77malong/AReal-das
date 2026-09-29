@@ -110,7 +110,7 @@ grpo_validate_fsdp_batching() {
 grpo_validate_ray_cluster() {
   local expected_nodes="${1:?expected nodes required}"
   local expected_gpus="${2:?expected GPUs required}"
-  ray status --address="${RAY_ADDRESS}"
+  areal_ray status --address="${RAY_ADDRESS}"
   EXPECTED_NODES="${expected_nodes}" EXPECTED_GPUS="${expected_gpus}" \
   "${PYTHON_BIN}" - <<'PY'
 import os

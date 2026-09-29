@@ -14,7 +14,7 @@ EXPECTED_GPUS="${EXPECTED_GPUS:-}"
 MIN_CPUS_PER_NODE="${MIN_CPUS_PER_NODE:-0}"
 GPUS_PER_NODE="${GPUS_PER_NODE:-}"
 
-ray status --address="${RAY_ADDRESS}"
+areal_ray status --address="${RAY_ADDRESS}"
 
 "${PYTHON_BIN}" - <<PY
 import os
