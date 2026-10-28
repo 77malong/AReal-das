@@ -110,8 +110,7 @@ async def _post_json(
         return await resp.json()
 
 
-@async_http_retry
-async def _post(
+async def _post_once(
     session: aiohttp.ClientSession,
     url: str,
     timeout_s: float,
@@ -120,6 +119,16 @@ async def _post(
     timeout = aiohttp.ClientTimeout(total=timeout_s)
     async with session.post(url, json=json_data, timeout=timeout) as resp:
         resp.raise_for_status()
+
+
+@async_http_retry
+async def _post(
+    session: aiohttp.ClientSession,
+    url: str,
+    timeout_s: float,
+    json_data: Any = None,
+) -> None:
+    await _post_once(session, url, timeout_s, json_data)
 
 
 def _get_own_ip() -> str:
@@ -320,6 +329,11 @@ def create_app(config: WeightUpdateConfig | None = None) -> FastAPI:
                 infer_params_meta.extend(meta)
             else:
                 infer_params_meta.append(meta)
+
+        # Single inference engine: its TP shards form one parameter replica.
+        # Without merging, the name-indexed planner keeps only the last TP rank.
+        if num_engines == 1:
+            infer_params_meta = _merge_training_meta_by_name(infer_params_meta)
 
         kv_store.put(pair_name, "training_params_meta", training_params_meta)
         kv_store.put(pair_name, "infer_params_meta", infer_params_meta)
@@ -607,7 +621,7 @@ def create_app(config: WeightUpdateConfig | None = None) -> FastAPI:
     ) -> None:
         await asyncio.gather(
             *[
-                _post(
+                _post_once(
                     session,
                     f"{url}/awex/update_weights",
                     timeout_s,
@@ -734,7 +748,7 @@ def create_app(config: WeightUpdateConfig | None = None) -> FastAPI:
         except Exception as e:
             duration_ms = (time.monotonic() - start) * 1000
             logger.error(
-                "Weight update failed for pair '%s': %s",
+                "Weight update failed for pair '%s': %r",
                 pair_info.pair_name,
                 e,
             )
@@ -742,7 +756,7 @@ def create_app(config: WeightUpdateConfig | None = None) -> FastAPI:
                 status="error",
                 version=body.version,
                 duration_ms=duration_ms,
-                error=str(e),
+                error=f"{type(e).__name__}: {e!r}",
             )
 
         duration_ms = (time.monotonic() - start) * 1000

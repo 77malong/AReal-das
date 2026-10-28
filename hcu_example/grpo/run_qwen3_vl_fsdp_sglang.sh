@@ -11,6 +11,7 @@ HCU_LAUNCHER_ROLLOUT_BACKEND=sglang
 HCU_LAUNCHER_PROFILE=qwen
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 export AREAL_ENV_PROFILE="${AREAL_ENV_PROFILE:-qwen}"
+export CONTROLLER_VERSION="${CONTROLLER_VERSION:-v1}"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/common.sh"
 
@@ -27,7 +28,7 @@ ROLLOUT_BACKEND="${ROLLOUT_BACKEND:-sglang:d1p1t4}"
 WEIGHT_UPDATE_MODE="${WEIGHT_UPDATE_MODE:-xccl}"
 
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-geometry3k-qwen3-vl}"
-TRIAL_NAME="${TRIAL_NAME:-grpo-fsdp4-sglang-tp4-fa3}"
+TRIAL_NAME="${TRIAL_NAME:-grpo-fsdp4-sglang-tp4-${EXPERIMENT_NAME}}"
 TIMESTAMP="${TIMESTAMP:-$(date '+%Y%m%d-%H%M%S')}"
 LOG_DIR="${LOG_DIR:-${LOG_ROOT}/${EXPERIMENT_NAME}-${TRIAL_NAME}-${TIMESTAMP}}"
 LOG_FILE="${LOG_FILE:-${LOG_DIR}/train.log}"

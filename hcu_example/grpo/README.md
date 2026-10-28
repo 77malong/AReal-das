@@ -158,3 +158,44 @@ bash run.sh \
 
 `--restart-ray` 只支持 `N_NODES=1`，会在训练前重建当前节点 Ray。多节点必须分别执行
 `--ray-head`、`--ray-worker`，最后只在 head 节点启动训练。`--dry-run` 不会启动或重启 Ray。
+
+## DeepSeek-R1 MoE 使用 BF16 权重和 KV cache
+
+原 DeepSeek launcher 的 Actor 已使用 BF16，但 SGLang 默认使用 FP8 KV cache。
+FP8 checkpoint 还会让 SGLang自动启用权重量化；仅修改 `dtype` 或删除配置字段不能完成转换。
+以下命令在仓库根目录执行，使用已安装 torch、safetensors 及训练依赖的 Python 环境。
+
+```bash
+export PYTHON_BIN=/path/to/training/python
+export FP8_MODEL=/public/home/malong01/areal-ml/deepseek-r1-4layers
+export MODEL_PATH=/public/home/malong01/areal-ml/deepseek-r1-4layers-bf16
+
+# 先看真实 tensor dtype 和转换后大小；此检查不需要 torch。
+"$PYTHON_BIN" hcu_example/scripts/convert_deepseek_fp8_to_bf16.py \
+  --source "$FP8_MODEL" --inspect
+# 按每个 128×128 block 的 scale 反量化到新目录，不修改原模型。
+"$PYTHON_BIN" hcu_example/scripts/convert_deepseek_fp8_to_bf16.py \
+  --source "$FP8_MODEL" --output "$MODEL_PATH"
+"$PYTHON_BIN" hcu_example/scripts/convert_deepseek_fp8_to_bf16.py \
+  --source "$MODEL_PATH" --require-bf16
+
+# 保留自己已验证的 MEGATRON_HOME / SGLANG_ROOT 等源码路径。
+source hcu_example/common/deepseek_bf16_env.sh
+export TOKENIZER_PATH="$MODEL_PATH"
+bash hcu_example/grpo/run.sh \
+  --model=deepseek --variant=moe --backend=megatron --rollout=sglang \
+  --model-path="$MODEL_PATH" --restart-ray
+```
+
+环境文件关闭 FP8 MoE、RMS/SILU quant 和相关 fused 路径，将 KV cache 固定为 BF16。
+它必须在启动 Ray 之前 source；已有 Ray 进程不会自动更新环境。`--restart-ray` 会重建当前节点的 Ray，
+应在该节点没有其他需要保留的 Ray 作业时使用；多节点需每个节点先 source，再按上文流程启动 head/worker。
+BF16 checkpoint 的大小按转换脚本输出估算，转换过程会同时保留原 FP8 模型。
+
+本地 SGLang 注册的 MLA backend 名称是 `dcu_mla`，环境文件使用此名称；若目标机器的版本注册的是
+`hcu_mla`，在 source 前设置 `SGLANG_ATTENTION_BACKEND=hcu_mla`。
+原 launcher 仍会传入 `fp8_gemm_backend=triton`，它仅选择遇到 FP8 层时的后端；
+对于无量化配置的 BF16 权重，它不会把模型转换为 FP8。
+保持默认 `GRPO_CONFIG=examples/math/gsm8k_grpo.yaml`（不启用 `actor.megatron.fp8_config`）。
+上述默认是 2 step、每个 prompt 采样 2 条的冒烟配置；BF16 会增加权重和 KV cache 显存用量，
+实际 HCU kernel 兼容性、显存余量及训练结果需在目标机器运行验证。

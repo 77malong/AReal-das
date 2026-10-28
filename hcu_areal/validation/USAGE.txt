@@ -1,0 +1,86 @@
+GLM-5 AWEX numerical parity checks
+================================
+
+These two opt-in CLI tests run against the installed GLM AWEX runtime patch.
+They never start a v1 controller or write checkpoint/weight files. Reports are
+JSON only. Source hashes identify the actual v1 Bridge and SGLang reference
+used; this does not establish which historical commit an earlier run used.
+
+Prerequisites
+-------------
+Use the existing Python 3.12 DCU environment with native GLM-5 Megatron-Bridge,
+Megatron-Core, AWEX, and the patched AReaL source on PYTHONPATH. Keep both v1
+and v2 SGLang source trees available. The reference executes the original
+Bridge conversion methods and the original SGLang loader/post-load functions.
+It uses small module allocations and parameter loader callbacks, not the full
+GLM model. It does not mock the AWEX metadata planner, TP gathers or P2P calls.
+
+In the current container:
+
+  source /workspace/test_v1.0.4/areal_runs/glm5-dual-20261027/env.sh
+  source /workspace/test_v1.0.4/AReaL-das-fix-awex/hcu_example/common/common_env.sh
+  cd /workspace/test_v1.0.4/AReaL-das-fix-awex
+  export GLM_V1_SGLANG_ROOT=/workspace/sglang
+  export SGLANG_USE_AITER=0
+  export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+
+1. Conversion versus v1
+-----------------------
+  python -m \
+    hcu_areal.validation.test_glm5_v1_conversion_parity \
+    --report /tmp/glm5-v1-conversion.json
+
+Two independent tensor versions cover all 841 parameter names from the real
+four-layer/256-expert model. Compare the new patch with the actual
+GLM5Bridge.stream_weights_megatron_to_hf implementation, called underneath
+v1 AutoBridge.export_hf_weights. Verify exact keys, shapes, dtypes and values.
+Negative controls must detect missing weights, gate/up swaps, EP expert swaps,
+and a wrong wire dtype. The eight indexer.k_norm weights/biases are compared
+after conversion to the non-AITER inference module's FP32 dtype, just as v1
+loading casts them. Raw v1 export is BF16 for those eight tensors; the new
+patch deliberately casts before transport. Test 2 verifies the actual load.
+
+2. AWEX transport and SGLang state versus v1
+------------------------------------------
+CPU tensors/Gloo, one machine with 16 processes:
+
+  torchrun --standalone \
+    --nproc_per_node=16 --max_restarts=0 -m \
+    hcu_areal.validation.test_glm5_awex_update_parity --backend gloo \
+    --report /tmp/glm5-awex-cpu16.json
+
+The current Hygon Transformer Engine queries GPU properties during import,
+even for CPU tensor tests. Run this environment on an idle DCU machine with
+GPUs visible. Test tensors/TP gathers/AWEX transport stay on CPU in Gloo mode;
+this is not a standalone CPU-only dependency installation. Its prewarm uses
+CPU P2P because the runtime accelerator prewarm cannot construct CPU devices.
+
+GPU option, exactly two idle machines with eight GPUs each. Run on BOTH machines
+with the same rendezvous address/port and consistent RCCL/LD_LIBRARY_PATH;
+NODE_RANK=0 is inference, NODE_RANK=1 is training. Do not hide the GPUs:
+
+  torchrun --nnodes=2 --nproc_per_node=8 --node_rank="$NODE_RANK" \
+    --master_addr="$MASTER_ADDR" --master_port="$MASTER_PORT" \
+    --max_restarts=0 -m hcu_areal.validation.test_glm5_awex_update_parity \
+    --backend nccl --report /tmp/glm5-awex-gpu16.json
+
+Test 2 uses actual TP4/PP2/EP4/ETP1 training placement, TP8 inference, metadata
+serialization/merge, transfer planning, AWEX sender/receiver execution and
+post-load cache refresh. Two changed weight versions are sent with both
+separate and fused shared-expert storage (four update cases). On every infer
+rank, compare all 841 logical weights, all raw fused parameter storage, all
+four layers' w_kc/w_vc caches and an MLA matrix multiplication probe against
+v1's original SGLang do_load_weights/post_load_weights functions. Deliberately
+corrupted caches and missing updates must be detected.
+
+Scope and reading results
+-------------------------
+Success requires exit code 0 and a JSON report with status=passed, not merely
+the creation of a report directory. Tensor dimensions are scaled while the
+real layer/expert key schema and rank layout are retained. Exact equality
+means torch.equal with matching dtype/shape, so max_abs_error is zero.
+This validates weight conversion/transfer and the selected MLA derived state;
+it is not a full-model forward/logits or optimizer/training-quality comparison.
+CPU/Gloo results do not demonstrate RCCL/IB behavior. The GPU option uses real
+RCCL but still needs its transport logs to establish whether IB was selected.
+The tests currently target unquantized, non-AITER inference with DTE disabled.

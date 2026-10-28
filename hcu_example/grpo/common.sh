@@ -13,14 +13,25 @@ GRPO_ENTRYPOINT="${GRPO_ENTRYPOINT:-examples/math/gsm8k_rl.py}"
 GRPO_CONFIG="${GRPO_CONFIG:-examples/math/gsm8k_grpo.yaml}"
 CLEAN_BEFORE_TRAIN="${CLEAN_BEFORE_TRAIN:-1}"
 
-# All HCU GRPO launchers use the official controller v2 stack.  Keep these
-# overrides in the shared launch function so every model launcher gets the
-# same actor/rollout version pair and cannot accidentally run a mixed v1/v2
-# configuration.
-CONTROLLER_V2_CONFIG=(
-  "+actor._version=v2"
-  "+rollout._version=v2"
+# The published AReaL v2.1.0 release contains both controller versions.
+# Legacy VisionRLVRWorkflow needs V1; Agent.run() needs V2. Keep V2 as the
+# default for existing Dense/MoE launchers, and let individual model launchers
+# select V1 explicitly without changing the rest of the project.
+CONTROLLER_VERSION="${CONTROLLER_VERSION:-v2}"
+case "${CONTROLLER_VERSION}" in
+  v1|v2) ;;
+  *) echo "[ERROR] Invalid CONTROLLER_VERSION=${CONTROLLER_VERSION} (expected v1 or v2)" >&2; exit 2 ;;
+esac
+CONTROLLER_VERSION_CONFIG=(
+  "+actor._version=${CONTROLLER_VERSION}"
+  "+rollout._version=${CONTROLLER_VERSION}"
 )
+if [[ "${CONTROLLER_VERSION}" == v2 ]]; then
+  CONTROLLER_VERSION_CONFIG+=(
+    "+actor.workers_ready_timeout=120"
+    "+rollout.workers_ready_timeout=120"
+  )
+fi
 
 _grpo_default_host_ip() {
   hostname -I 2>/dev/null | awk '{print $1}'
@@ -161,6 +172,9 @@ grpo_print_summary() {
   echo "Model:           ${MODEL_PATH}"
   echo "Actor backend:   ${ACTOR_BACKEND}"
   echo "Rollout backend: ${ROLLOUT_BACKEND}"
+  echo "Controller:      ${CONTROLLER_VERSION}"
+  echo "Weight update:   ${WEIGHT_UPDATE_MODE:-config default}"
+  echo "Python entry:    ${GRPO_ENTRYPOINT}"
   echo "Nodes:           ${N_NODES}"
   echo "HCUs/node:       ${N_GPUS_PER_NODE}"
   echo "Train batch:     ${TRAIN_BATCH_SIZE}"
@@ -176,7 +190,7 @@ grpo_launch() {
   local -a overrides=("$@")
   set +e
   "${PYTHON_BIN}" "${GRPO_ENTRYPOINT}" --config "${GRPO_CONFIG}" \
-    "${overrides[@]}" "${CONTROLLER_V2_CONFIG[@]}" 2>&1 | tee "${LOG_FILE}"
+    "${overrides[@]}" "${CONTROLLER_VERSION_CONFIG[@]}" 2>&1 | tee "${LOG_FILE}"
   local status=${PIPESTATUS[0]}
   set -e
   echo

@@ -24,6 +24,12 @@ from areal.v2.weight_update.awex import (
     awex_wu_use_group,
     fetch_kv_metadata,
 )
+from areal.v2.weight_update.awex.vlm_layout import (
+    is_qwen3_vl_type,
+    is_qwen3_vl_vision_qkv,
+    normalize_qwen3_vl_train_name,
+    pack_vision_qkv_rank_major,
+)
 from areal.v2.weight_update.nccl_group import (
     init_weights_update_group,
     setup_batch_isend_irecv,
@@ -47,6 +53,7 @@ class AwexFSDPAdapter(AwexTrainingAdapter):
         self._weights_update_group = None
         self._weights_update_group_gloo = None
         self._transfer_rank: int | None = None
+        self._qwen3_vl_vision_tp_size: int | None = None
 
     @property
     def parallelism_strategy(self) -> dict:
@@ -67,6 +74,13 @@ class AwexFSDPAdapter(AwexTrainingAdapter):
     def _tie_word_embeddings(self) -> bool:
         return getattr(self._engine.model_config, "tie_word_embeddings", False)
 
+    def _wire_dtype(self, tensor: torch.Tensor) -> torch.dtype:
+        # FSDP master storage may be FP32 while rollout parameters are BF16.
+        # Metadata must describe the actual exported tensor, not master storage.
+        if tensor.is_floating_point():
+            return self._engine._compute_dtype()
+        return tensor.dtype
+
     def get_weight_metadata(self) -> list[ParameterMeta]:
         rank_info = self._build_rank_info()
         metadata: list[ParameterMeta] = []
@@ -80,13 +94,14 @@ class AwexFSDPAdapter(AwexTrainingAdapter):
                 shard_meta = self._extract_dtensor_shard_meta(name, tensor, rank_info)
                 global_shape = tuple(tensor.shape)
                 global_numel = int(tensor.numel())
-                dtype = tensor.dtype
+                dtype = self._wire_dtype(tensor)
             else:
                 shard_meta = self._extract_plain_shard_meta(name, tensor, rank_info)
                 global_shape = tuple(tensor.shape)
                 global_numel = int(tensor.numel())
-                dtype = tensor.dtype
+                dtype = self._wire_dtype(tensor)
 
+            shard_meta.dtype = dtype
             replica = ParameterReplicaMeta(shards=[shard_meta])
             metadata.append(
                 ParameterMeta(
@@ -115,10 +130,15 @@ class AwexFSDPAdapter(AwexTrainingAdapter):
                 continue
 
             tensor = param.data
-            if isinstance(tensor, DTensor):
-                local_params[name] = tensor._local_tensor
+            if self._is_qwen3_vl_vision_qkv(name):
+                local = self._get_repacked_vision_qkv_shard(tensor)
+                local_params[name] = self._engine._cast_to_compute_dtype(local)
+            elif isinstance(tensor, DTensor):
+                local_params[name] = self._engine._cast_to_compute_dtype(
+                    tensor._local_tensor
+                )
             else:
-                local_params[name] = tensor
+                local_params[name] = self._engine._cast_to_compute_dtype(tensor)
 
         return local_params
 
@@ -142,6 +162,21 @@ class AwexFSDPAdapter(AwexTrainingAdapter):
         self._transfer_rank = transfer_rank
 
         infer_meta, train_meta = fetch_kv_metadata(kv_store_url, pair_name)
+
+        if is_qwen3_vl_type(self._engine.model_config.model_type):
+            vision_tp = {
+                int(shard.num_shards)
+                for meta in infer_meta
+                if is_qwen3_vl_vision_qkv(meta.name)
+                for shard in meta.shards
+            }
+            if len(vision_tp) != 1:
+                raise RuntimeError(
+                    "Cannot determine Qwen3-VL inference vision TP from "
+                    f"AWEX metadata: {vision_tp}. Do not perform an "
+                    "unverified visual-QKV weight update."
+                )
+            self._qwen3_vl_vision_tp_size = vision_tp.pop()
 
         builder = TransferPlanBuilder(
             infer_world_size=infer_world_size,
@@ -235,8 +270,49 @@ class AwexFSDPAdapter(AwexTrainingAdapter):
         self._weights_update_group_gloo = None
         self._transfer_plan = None
         self._transfer_rank = None
+        self._qwen3_vl_vision_tp_size = None
+
+    def _is_qwen3_vl_vision_qkv(self, name: str) -> bool:
+        return (
+            is_qwen3_vl_type(self._engine.model_config.model_type)
+            and is_qwen3_vl_vision_qkv(name)
+        )
+
+    @torch.no_grad()
+    def _get_repacked_vision_qkv_shard(self, tensor: torch.Tensor) -> torch.Tensor:
+        """Collect the FSDP source, repack Q/K/V, then re-shard by original offsets.
+
+        All FSDP ranks must call this in the same order (execute_weight_update
+        calls get_local_shard_parameters() on all ranks). This is a correctness-
+        first path for Qwen3-VL DP4 -> SGLang TP4.
+        """
+        tp_size = self._qwen3_vl_vision_tp_size
+        if tp_size is None:
+            raise RuntimeError(
+                "Qwen3-VL vision TP is unknown; initialize the AWEX transfer "
+                "plan before exporting visual QKV tensors"
+            )
+        if isinstance(tensor, DTensor):
+            if any(isinstance(p, Shard) and p.dim != 0 for p in tensor.placements):
+                raise NotImplementedError(
+                    "Qwen3-VL vision QKV converter requires FSDP sharding along dim 0"
+                )
+            offset = self._compute_dtensor_offset(tensor)[0]
+            local_shape = tuple(tensor._local_tensor.shape)
+            full = tensor.full_tensor()
+            packed = pack_vision_qkv_rank_major(full, tp_size)
+            local = packed.narrow(0, offset, local_shape[0]).contiguous()
+            if tuple(local.shape) != local_shape:
+                raise RuntimeError(
+                    f"Qwen3-VL vision QKV local shape changed: "
+                    f"{tuple(local.shape)} != {local_shape}"
+                )
+            return local
+        return pack_vision_qkv_rank_major(tensor, tp_size)
 
     def _to_hf_name(self, name: str) -> str:
+        if is_qwen3_vl_type(self._engine.model_config.model_type):
+            return normalize_qwen3_vl_train_name(name)
         if self._engine.is_vision_model and is_qwen_vl_model(
             self._engine.model_config.model_type
         ):

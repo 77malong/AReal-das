@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import faulthandler
 import functools
+import threading
 import os
 from collections.abc import Callable
 from copy import deepcopy
@@ -997,6 +999,11 @@ class PPOTrainer:
             )
 
     def close(self):
+        # Keep stack dumps enabled through interpreter shutdown.
+        # This watchdog does not terminate the process.
+        faulthandler.enable(all_threads=True)
+        faulthandler.dump_traceback_later(60.0, repeat=True)
+        logger.info("[EXIT] trainer.close begin; stack dump every 60 seconds")
         self.saver.finalize()
         if hasattr(self, "_train_rdataset") and self._train_rdataset is not None:
             self._train_rdataset.close()
@@ -1014,8 +1021,18 @@ class PPOTrainer:
             self.ref.destroy()
         if self.critic is not None:
             self.critic.destroy()
+        logger.info("[EXIT] actor.destroy begin")
         self.actor.destroy()
+        logger.info("[EXIT] actor.destroy end")
+        logger.info("[EXIT] perf tracer save begin")
         perf_tracer.save(force=True)
+        logger.info("[EXIT] perf tracer save end")
+        for thread in threading.enumerate():
+            logger.info(
+                "[EXIT] remaining thread: name=%s ident=%s daemon=%s alive=%s",
+                thread.name, thread.ident, thread.daemon, thread.is_alive(),
+            )
+        logger.info("[EXIT] trainer.close returned")
 
     def _config_perf_tracer(self):
         rank = int(os.getenv("RANK", "0"))

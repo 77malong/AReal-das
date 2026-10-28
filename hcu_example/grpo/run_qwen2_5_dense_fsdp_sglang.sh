@@ -22,7 +22,7 @@ N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-8}"
 # original SGLang TP2 rollout (Qwen2.5-0.5B has only 2 KV heads).
 ACTOR_BACKEND="${ACTOR_BACKEND:-fsdp:d2p1t1}"
 ROLLOUT_BACKEND="${ROLLOUT_BACKEND:-sglang:d1p1t2}"
-WEIGHT_UPDATE_MODE="${WEIGHT_UPDATE_MODE:-xccl}"
+WEIGHT_UPDATE_MODE="${WEIGHT_UPDATE_MODE:-nccl}"
 
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-gsm8k-qwen2-5-dense}"
 TRIAL_NAME="${TRIAL_NAME:-grpo-fsdp2-sglang-tp2}"
@@ -83,6 +83,7 @@ ACTOR_CONFIG=(
   "++actor.attn_impl=${ACTOR_ATTN_IMPL}"
   "++actor.fsdp.memory_efficient_load=${FSDP_MEMORY_EFFICIENT_LOAD}"
   "++actor.fsdp.offload_params=${FSDP_OFFLOAD_PARAMS}"
+  "+actor.admin_api_key=areal-admin-key"
 )
 
 ROLLOUT_CONFIG=(
@@ -90,6 +91,7 @@ ROLLOUT_CONFIG=(
   "++rollout.setup_timeout=${ROLLOUT_SETUP_TIMEOUT}"
   "gconfig.n_samples=${N_SAMPLES}"
   "gconfig.max_new_tokens=${MAX_NEW_TOKENS}"
+  "+rollout.admin_api_key=areal-admin-key"
 )
 
 SGLANG_CONFIG=(

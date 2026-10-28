@@ -3,6 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 set -Eeuo pipefail
 
+# Temporary trusted-single-node workaround: controller-v2 services bind to the
+# node IP and otherwise reject AReaL's documented default admin key.  Keep this
+# overridable so callers can set it to 0 or provide a non-default key later.
+export AREAL_ALLOW_DEFAULT_ADMIN_KEY="${AREAL_ALLOW_DEFAULT_ADMIN_KEY:-1}"
+
 # export NCCL_DEBUG="${NCCL_DEBUG:-INFO}"
 # export NCCL_DEBUG_SUBSYS="${NCCL_DEBUG_SUBSYS:-INIT,NET,COLL}"
 

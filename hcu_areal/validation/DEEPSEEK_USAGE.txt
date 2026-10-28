@@ -1,0 +1,151 @@
+DeepSeek-V3/R1 automatic BF16/FP8 AWEX patch v3.5
+================================================
+
+Install the full ZIP at the AReaL repository root, after keeping a copy of the
+existing hcu_areal directory. The .patch is incremental from the released
+DeepSeek v3.4.1 ZIP. Neither form edits AReaL, AWEX, SGLang or Megatron sources.
+Existing .pth installation applies the patch only in new Python processes.
+If absent, run: python hcu_areal/install_hook.py install
+
+Default smoke sample: /workspace/deepseek-r1-4layers-bf16 in the existing containers.
+The runtime patch and entrypoint are not restricted to four layers. Set MODEL_PATH
+and the inference model path to the actual model; positive layer counts and
+matching train/infer geometry are validated. The profile still requires two
+8-GPU nodes and disables checkpoints and export.
+
+Dispatch uses quantization_config, not torch_dtype alone. Without quantization
+the existing BF16/FP32 path is retained; ordinary dynamic block-FP8 E4M3 selects
+FP8 byte + FP32 scale updates. The entrypoint reads the inference target config
+and propagates it to both service roles; there is no manual precision switch.
+An FP8 checkpoint is loaded with its actual scales into training compute values.
+Training FP8 GEMM remains controlled by the native Megatron/TE configuration.
+
+Unsupported: active MTP/NextN, LoRA, MXFP8/FP4, prepacked AITER/Marlin/UE8M0,
+and inference EP>1. A base checkpoint may declare optional MTP without enabling
+NextN inference. BF16 and FP8 runtime paths retain these explicit boundaries.
+FP8 compute must use hardware which supports it, such as nmz5; BW native FP8
+GEMM is unsupported. No nmz5 full-model FP8 run is claimed by this package.
+Native Bridge must include deepseek/deepseek_v3_bridge.py. The profile defaults
+to /workspace/dcu_megatron and the same pinned SGLang tree as the GLM run;
+override these paths before sourcing when deploying elsewhere.
+
+Validation
+----------
+Run using the existing native Python 3.12 DCU environment and source common_env
+so PYTHONPATH includes the native Core/Bridge/HCU sources and patched AReaL.
+
+  python -m unittest discover -s hcu_areal/tests -v
+  python -m hcu_areal.check_install --full --megatron --flashmla
+  python -m hcu_areal.validation.test_deepseek_flashmla_gpu \
+    --report /tmp/deepseek-flashmla.json
+  OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 torchrun --standalone \
+    --nproc_per_node=16 --max_restarts=0 -m \
+    hcu_areal.validation.test_deepseek_fp8_awex_update_parity --backend gloo \
+    --report /tmp/deepseek-fp8-awex.json
+  python -m hcu_areal.validation.test_deepseek_v1_conversion_parity \
+    --report /tmp/deepseek-v1.json
+  OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 torchrun --standalone \
+    --nproc_per_node=16 --max_restarts=0 -m \
+    hcu_areal.validation.test_deepseek_awex_update_parity --backend gloo \
+    --report /tmp/deepseek-awex.json
+
+The second test has 8 train + 8 infer processes, actual TP8/EP8/ETP1 and TP8,
+and real AWEX metadata/planning/P2P. It compares two changed weight versions
+and both shared-expert storage modes with native v1 loading. Negative controls
+detect missing updates/stale caches; the first test also detects gate/up and
+expert swaps, missing keys, and lost FP32 correction-bias precision. Tensors
+are scaled, with all 821 real names. CPU/Gloo does not establish RCCL/IB or
+full-model logits equality. Hygon TE still queries GPUs during import, so this
+environment needs an idle DCU machine with GPUs visible even in Gloo mode.
+No v1 controller or checkpoint writer is used. JSON reports record source hashes.
+
+AWEX_WU_USE_GROUP=0 exercises the existing per-operation transport; the default
+numerical test keeps grouped transport. The selected value is included in its
+JSON report and the two-node entrypoint forwards it to both service roles.
+The per-operation path passed four real-GPU numerical rounds on bw48/bw68
+over Socket. This is a scaled tensor test, not a full-model transfer benchmark.
+
+The FlashMLA test uses one idle GPU and the real BF16 decode kernel with two
+changing cache-length sets, compared against Torch FP32 attention. The v3.4.1
+compatibility hooks address DCU's FP8 Tensor metadata builder being used with
+the modern BF16 API, which requires FlashMLASchedMeta. A fresh native scheduler
+object is created for each decode. Other models, FP8 cache and old APIs retain
+their original path. This does not verify FP8 checkpoint dequantization.
+
+To exercise DeepSeek independently, prefix the second command with:
+  HCU_AREAL_DISABLE_QWEN35_AWEX=1 HCU_AREAL_DISABLE_GEMMA3_AWEX=1 HCU_AREAL_DISABLE_GLM5_AWEX=1
+
+GPU numerical option: use --backend nccl on exactly two idle 8-GPU machines,
+torchrun --nnodes=2 --nproc_per_node=8 with matching master_addr/master_port.
+Node rank 0 is inference; node rank 1 is training. This mode needs its own
+execution result and RCCL logs; a Gloo pass is not a GPU pass.
+
+Two-node training preparation
+-----------------------------
+On EACH selected idle node, in the owned container, from the AReaL root:
+
+  export MODEL_PATH=/workspace/deepseek-r1-4layers-bf16
+  source hcu_areal/validation/deepseek_dual_profile.sh
+  source hcu_example/common/common_env.sh
+  source hcu_areal/validation/deepseek_ib_env.sh
+
+The IB helper must be sourced after common_env/DTK to keep the RCCL plugin
+library prefix first. Set RCCL_LOG_DIR before sourcing to produce log.%h.%p.
+Apply this environment before creating dedicated Ray processes on both nodes.
+Do not restart another user's Ray or container. Use the existing two-node Ray
+procedure; run training only on the head after its worker has joined and after
+communication preflight. No Ray or training process is started by source above.
+
+Check the actual Socket interface speed before choosing a Socket fallback.
+On bw48/bw68 the selected management links are 1 Gbps: transferring the model's
+28.15 GiB alone takes at least 242 seconds, beyond the native gateway's default
+update_timeout_s=120. Both grouped and per-operation full-model trials reached
+that deadline after inference warmup and PPO computation. Later Broken pipe
+messages followed peer shutdown; those trials do not establish a grouped-P2P
+defect. Use an IB-capable idle pair, or configure a suitably longer gateway
+deadline before using that slow fallback.
+
+Only check config, without creating a trainer, Ray job, dataset or tokenizer:
+
+  python hcu_areal/validation/deepseek_dual_train.py --check-only \
+    --config hcu_areal/validation/deepseek_dual_config.yaml \
+    +actor._version=v2 +rollout._version=v2 actor.path="$MODEL_PATH"
+
+After the communication preflight and dedicated Ray cluster are ready, the
+profile routes the existing launcher to its isolated config and v2 entrypoint:
+
+  bash hcu_example/grpo/run_deepseekr1_moe_megatron_sglang.sh
+
+Use the existing cached GSM8K environment on both nodes for an offline run.
+The Ray environment must include its HF_HOME, HF_DATASETS_CACHE and HF_HUB_CACHE;
+the entrypoint propagates explicit offline/cache flags and BF16 feature flags.
+NCCL interface/HCA/debug-file values must be set correctly on each node.
+
+Default inference max_running_requests=4 and rollout max_concurrent_rollouts=4.
+The launcher accepts SGLANG_MAX_RUNNING_REQUESTS for future tuning; change the
+isolated YAML's rollout limit too if increasing aggregate rollout concurrency.
+Actor N_SAMPLES=4, train/valid batch=1, MAX_NEW_TOKENS=128, TOTAL_TRAIN_STEPS=2.
+The short generation is a pipeline smoke check, not a learning-quality test.
+Only after successful weight updates should generation/steps be increased.
+
+This harness preserves BF16 weights/KV cache, FP32 router with native Torch GEMM,
+and BF16 Adam moments. It disables AITER/quantizing paths, all checkpoint save/
+recover frequencies, and model export. Failure/success cleanup uses docker
+restart on the owned selected containers. Never add a third machine.
+
+Verified full-model run (2026-10-27): bw48 training + bw61 inference, v2/AWEX,
+AWEX_WU_USE_GROUP=0, TP8/PP1/EP8/ETP1 -> TP8, inference concurrency 4, RCCL IB.
+Two steps and two weight updates passed, update_successful=1 at both steps,
+finite nonzero gradients, 821-name/dtype/shape and inference shard coverage
+checks passed, exit code 0. No weight files were exported; both owned containers
+were restarted afterwards. Rewards were zero, so this is a pipeline check.
+Result directory under areal_runs/deepseek-dual-20261027:
+  deepseek-r1-v341-4layers-v2-ib_rdma-group0-bw48-bw61-20261027-184036
+
+Disable/rollback
+----------------
+HCU_AREAL_DISABLE_DEEPSEEK_AWEX=1 disables the DeepSeek AWEX and BF16 API rules.
+To disable BF16 API compatibility alone, set HCU_AREAL_DISABLE_DEEPSEEK_MLA_API=1. To remove the
+entire update restore the saved hcu_areal directory, or apply the incremental
+patch in reverse only if its files have not changed. Restart owned Python/Ray
+processes after rollback; existing interpreters do not reload patches.

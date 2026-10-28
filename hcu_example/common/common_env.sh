@@ -364,12 +364,16 @@ case "${AREAL_ENV_PROFILE}" in
     ;;
   qwen)
     # Required by the known-working Qwen3 SGLang launchers in this package.
+    export TORCH_COMPILE_DISABLE=1
+    export TORCHDYNAMO_DISABLE=1
     export SGLANG_ENABLE_SPEC_V2="${SGLANG_ENABLE_SPEC_V2:-1}"
     export SGLANG_CREATE_EXTEND_AFTER_DECODE_SPEC_INFO="${SGLANG_CREATE_EXTEND_AFTER_DECODE_SPEC_INFO:-1}"
     ;;
   qwen35)
     # Qwen3.5 uses the same SGLang speculative-v2 environment as Qwen3, but
     # set TORCH_COMPILE_DISABLE=1 and TORCHDYNAMO_DISABLE=1 if the runtime requires it.
+    export TORCH_COMPILE_DISABLE=1
+    export TORCHDYNAMO_DISABLE=1
     export SGLANG_ENABLE_SPEC_V2="${SGLANG_ENABLE_SPEC_V2:-1}"
     export SGLANG_CREATE_EXTEND_AFTER_DECODE_SPEC_INFO="${SGLANG_CREATE_EXTEND_AFTER_DECODE_SPEC_INFO:-1}"
     ;;
@@ -452,6 +456,8 @@ case "${AREAL_ENV_PROFILE}" in
     # GLM5/MLA path is intentionally different from Qwen's speculative-v2 path.
     unset SGLANG_ENABLE_SPEC_V2 || true
     unset SGLANG_CREATE_EXTEND_AFTER_DECODE_SPEC_INFO || true
+    export TORCH_COMPILE_DISABLE=1
+    export TORCHDYNAMO_DISABLE=1
     export HF_HOME="${HF_HOME:-${BASE_DIR}/hf_cache}"
     export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-${HF_HOME}/datasets}"
     export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-${HF_HOME}/transformers}"
@@ -490,6 +496,8 @@ case "${AREAL_ENV_PROFILE}" in
     export NCCL_MIN_NCHANNELS="${NCCL_MIN_NCHANNELS:-16}"
     export ALLREDUCE_STREAM_WITH_COMPUTE="${ALLREDUCE_STREAM_WITH_COMPUTE:-1}"
     export SGLANG_DISABLE_CUSTOM_ALL_REDUCE="${SGLANG_DISABLE_CUSTOM_ALL_REDUCE:-True}"
+    export TORCH_COMPILE_DISABLE=1
+    export TORCHDYNAMO_DISABLE=1
     ;;
   *)
     echo "[ERROR] Unknown AREAL_ENV_PROFILE=${AREAL_ENV_PROFILE}. Use base, qwen, qwen35, gemma3, glm5, or deepseek." >&2

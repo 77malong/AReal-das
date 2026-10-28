@@ -44,6 +44,12 @@ from areal.v2.weight_update.awex.delta_config import (
 from areal.v2.weight_update.inference_adapter import (
     AwexInferenceAdapter,
 )
+from areal.v2.weight_update.awex.vlm_layout import (
+    is_qwen3_vl_type,
+    is_qwen3_vl_vision_qkv,
+    normalize_qwen3_vl_visual_infer_name,
+    qwen3_vl_vision_sharding_dim,
+)
 from areal.v2.weight_update.nccl_group import (
     init_weights_update_group,
     setup_batch_isend_irecv,
@@ -148,6 +154,13 @@ class AwexSGLangAdapter(AwexInferenceAdapter):
         into ``experts.w13_weight`` (gate+up) and ``experts.w2_weight`` (down).
         The training side keeps per-expert HF names, so we unfuse here to match.
         """
+        # The SGLang vision QKV is a fused, rank-major TP parameter. Splitting
+        # it with language-model heads would corrupt the tensor geometry.
+        if (
+            is_qwen3_vl_type(getattr(self._get_model().config, "model_type", None))
+            and name.startswith("visual.")
+        ):
+            return [(normalize_qwen3_vl_visual_infer_name(name), tensor)]
         if "qkv_proj" in name:
             cfg = self._get_model().config
             num_heads = cfg.num_attention_heads
@@ -261,15 +274,56 @@ class AwexSGLangAdapter(AwexInferenceAdapter):
         rank_info = self._build_rank_info()
         strategy = self._build_sharding_strategy(rank_info)
         self._rank_info = rank_info
+        if is_qwen3_vl_type(getattr(self._get_model().config, "model_type", None)):
+            if getattr(self._scheduler.server_args, "mm_enable_dp_encoder", False):
+                raise NotImplementedError(
+                    "Qwen3-VL AWEX visual QKV repacking currently requires "
+                    "mm_enable_dp_encoder=False; vision TP sharding differs in DP mode"
+                )
 
         metadata: list[ParameterMeta] = []
 
         for name, param in self._get_model().named_parameters():
             for hf_name, local_tensor in self._unfuse_params(name, param.data):
                 local_shape = tuple(local_tensor.shape)
-                sharding_type, sharding_dim, num_shards = (
-                    strategy.get_sharding_strategy(hf_name)
-                )
+                if (
+                    is_qwen3_vl_type(
+                        getattr(self._get_model().config, "model_type", None)
+                    )
+                    and hf_name.startswith("model.visual.")
+                ):
+                    # AWEX generic sharding incorrectly treats row-parallel
+                    # visual linear_fc2/proj weights as dim-0 shards.
+                    vision_dim = qwen3_vl_vision_sharding_dim(hf_name)
+                    tp = int(rank_info.attn_tp_size)
+                    if vision_dim is None or tp == 1:
+                        sharding_type, sharding_dim, num_shards = (
+                            ShardingType.NO_SHARDING, 0, 1
+                        )
+                    else:
+                        sharding_type = (
+                            ShardingType.DP_TP_SHARDING
+                            if self._scheduler.server_args.enable_dp_attention
+                            else ShardingType.TP_SHARDING
+                        )
+                        sharding_dim, num_shards = vision_dim, tp
+                else:
+                    sharding_type, sharding_dim, num_shards = (
+                        strategy.get_sharding_strategy(hf_name)
+                    )
+                if is_qwen3_vl_vision_qkv(hf_name):
+                    if sharding_type not in (
+                        ShardingType.TP_SHARDING,
+                        ShardingType.DP_TP_SHARDING,
+                        ShardingType.NO_SHARDING,
+                    ) or sharding_dim != 0 or int(num_shards) != int(
+                        rank_info.attn_tp_size
+                    ):
+                        raise RuntimeError(
+                            f"Invalid visual QKV sharding strategy for {hf_name}: "
+                            f"{sharding_type}, dim={sharding_dim}, "
+                            f"shards={num_shards}, attn_tp={rank_info.attn_tp_size}"
+                        )
 
                 global_offset = [0] * len(local_shape)
                 if sharding_type == ShardingType.TP_SHARDING:

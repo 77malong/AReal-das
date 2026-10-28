@@ -170,7 +170,7 @@ def areal_run_scheduler_process(
 
     import psutil
     from sglang.srt.environ import envs
-    from sglang.srt.managers.scheduler import Scheduler, configure_scheduler
+    from sglang.srt.managers.scheduler import Scheduler, configure_scheduler_process
     from sglang.srt.observability.trace import (
         process_tracing_init,
         trace_set_thread_info,
@@ -191,8 +191,8 @@ def areal_run_scheduler_process(
     )
 
     logger = logging.getLogger(__name__)
-    dp_rank = configure_scheduler(
-        server_args, tp_rank, attn_cp_rank, moe_dp_rank, moe_ep_rank, pp_rank, dp_rank
+    dp_rank = configure_scheduler_process(
+        server_args, gpu_id, tp_rank, attn_cp_rank, moe_dp_rank, moe_ep_rank, pp_rank, dp_rank
     )
 
     kill_itself_when_parent_died()

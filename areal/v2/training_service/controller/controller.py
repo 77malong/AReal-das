@@ -969,6 +969,11 @@ class GatewayTrainController:
                 host=gethostip(),
                 admin_api_key=self.config.admin_api_key,
                 log_level=self.config.log_level,
+                # WeightUpdateController has its own health-check timeout.
+                # Propagate the train controller's configured setup timeout
+                # instead of silently using its 30-second default.
+                setup_timeout=self.config.setup_timeout,
+                request_timeout=self.config.request_timeout,
             )
         )
         ctrl.initialize()
@@ -1025,6 +1030,11 @@ class GatewayTrainController:
             f"meta.version must be a positive integer, got {meta.version}"
         )
         result = self._weight_update_ctrl.update_weights(version=meta.version)
+        if result.status != "ok":
+            raise RuntimeError(
+                f"Weight update v{meta.version} failed "
+                f"after {result.duration_ms:.0f}ms: {result.error!r}"
+            )
         self.rollout.continue_generation()
         logger.info(
             "Weight update v%d completed (%s, %.0fms)",
@@ -1187,19 +1197,29 @@ class GatewayTrainController:
         self.api_key = None
 
         if self._async_client is not None:
+            logger.info("[EXIT] actor async HTTP client close begin")
+            client = self._async_client
+
+            async def _close_client() -> None:
+                await asyncio.wait_for(client.aclose(), timeout=10.0)
+
             try:
-                run_async_task(self._async_client.aclose)
+                run_async_task(_close_client)
             except Exception:
-                pass
-            self._async_client = None
-            self._async_client_loop = None
+                logger.exception("[EXIT] actor async HTTP client close failed")
+            finally:
+                self._async_client = None
+                self._async_client_loop = None
+            logger.info("[EXIT] actor async HTTP client close end")
 
         import torch.distributed as dist
 
         if self._own_process_group:
             try:
                 if dist.is_initialized():
+                    logger.info("[EXIT] controller Gloo process group destroy begin")
                     dist.destroy_process_group()
+                    logger.info("[EXIT] controller Gloo process group destroy end")
             except Exception:
                 logger.error(
                     "Failed to destroy process group: %s", traceback.format_exc()
@@ -1215,3 +1235,4 @@ class GatewayTrainController:
             future.cancel()
 
         self._cleanup_runtime_state()
+        logger.info("[EXIT] actor.destroy returned")
