@@ -160,7 +160,21 @@ def main():
             prepare_config(
                 config, model_dir, scratch, cache, train_log, gpus, ray_temp_dir
             )
-            if "gfx938" in architectures and case_name in QWEN_KV_FALLBACK_CASES:
+            version_path = Path("/opt/dtk/.info/version-dev")
+            dtk_version = (
+                version_path.read_text().strip() if version_path.is_file() else ""
+            )
+            if dtk_version == "26.10":
+                config["runtime"]["env"].update(
+                    PYTORCH_ALLOC_CONF="expandable_segments:False",
+                    PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False",
+                    NCCL_P2P_DISABLE="1",
+                )
+            elif (
+                dtk_version.startswith("26.04")
+                and "gfx938" in architectures
+                and case_name in QWEN_KV_FALLBACK_CASES
+            ):
                 # The DTK 26.04 CI image's native SGLang KV and TopK kernels
                 # were built for gfx936. Use the validated fallback paths.
                 overrides = {"SGLANG_KVALLOC_KERNEL": "0"}
