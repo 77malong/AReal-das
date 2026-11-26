@@ -114,14 +114,17 @@ python3 -m hcu_areal.launch --config examples/configs/gsm8k_qwen35_fsdp.yaml \
   --set 'runtime.ray.num_gpus=4'
 ```
 
-SGLang `0.5.18+g453edca` 审计镜像使用上述配置完成两步训练和两次权重同步，两步梯度均为 0。当前公开发布镜像的同配置短训待验证。
+DTK 26.10 的 BW1000 镜像在单机 4 卡上完成两步和两次 AWEX 同步，两步梯度均为 0。
+显存分配设置见[镜像构建指南](../docs/build-docker-image.md#hcu-%E9%AA%8C%E8%AF%81)。
 
 <a id="qwen35-moe-megatron"></a>
 
 ## Qwen3.5-35B-A3B：Megatron + SGLang
 
 默认单机 8 卡，4 张 Megatron 训练卡和 4 张 SGLang 推理卡（两个 TP2 副本）。最多训练 2 步，通过 v2 AWEX 同步权重。配置关闭
-MTP，训练优化器全量卸载到宿主机内存。完整检查点已用公开镜像完成 4+2 卡两步短训和两次权重同步。
+MTP，训练优化器全量卸载到宿主机内存。完整检查点已用公开镜像完成 4+2 卡两步短训，也在 DTK 26.10 的 BW1000 镜像上完成了 4+4
+卡两步短训。两次运行都完成两次 AWEX
+同步。显存分配设置见[镜像构建指南](../docs/build-docker-image.md#hcu-%E9%AA%8C%E8%AF%81)。
 
 在容器内执行，填入对应的模型挂载路径。
 
@@ -135,7 +138,9 @@ python3 -m hcu_areal.launch --config examples/configs/gsm8k_qwen35_moe_megatron.
 ## Qwen3.6-35B-A3B：Megatron + SGLang
 
 默认单机 8 卡，4 张 Megatron 训练卡和 4 张 SGLang 推理卡（两个 TP2 副本）。最多训练 2 步，通过 v2 AWEX 同步权重。配置关闭
-MTP，训练优化器全量卸载到宿主机内存。完整检查点已用公开镜像完成 4+2 卡两步短训和两次权重同步。
+MTP，训练优化器全量卸载到宿主机内存。完整检查点已用公开镜像完成 4+2 卡两步短训，也在 DTK 26.10 的 BW1000 镜像上完成了 4+4 卡两步短训。DTK
+26.10 的成功复测使用 2 TiB 宿主机内存的节点，两步梯度均为非零。
+显存分配设置见[镜像构建指南](../docs/build-docker-image.md#hcu-%E9%AA%8C%E8%AF%81)。
 
 在容器内执行，填入对应的模型挂载路径。
 
@@ -149,7 +154,8 @@ python3 -m hcu_areal.launch --config examples/configs/gsm8k_qwen36_moe_megatron.
 ## Qwen3.8-27B：Megatron + SGLang
 
 使用完整 BF16 检查点。默认单机 8 卡，其中 4 张卡运行 Megatron（TP2 × PP2），4 张卡运行 SGLang（两个 TP2 副本）。配置最多训练 2
-步，关闭 MTP，训练优化器全量卸载到宿主机内存，通过 v2 AWEX 同步权重。4+2 卡实测完成两步训练及两次权重同步，两步梯度范数均非零。
+步，关闭 MTP，训练优化器全量卸载到宿主机内存，通过 v2 AWEX 同步权重。DTK 26.10 的 BW1000 镜像完成了单机 8 卡两步训练及两次权重
+同步，第二步梯度为非零。显存分配设置见[镜像构建指南](../docs/build-docker-image.md#hcu-%E9%AA%8C%E8%AF%81)。
 
 在容器内执行，填入模型挂载路径。
 
@@ -180,8 +186,8 @@ python3 -m hcu_areal.launch --config examples/configs/gsm8k_qwen3_moe_megatron_s
 
 ### 双机启动
 
-双机配置默认每机 8 卡、每个 Ray 节点声明 128 个 CPU，最多训练 10
-步。该配置尚待双机实测。两台机器需使用相同镜像和代码版本及路径，并在相同容器内路径下可读地访问模型；`/workspace/runs`
+双机配置默认每机 8 卡、每个 Ray 节点声明 128 个 CPU，最多训练 10 步。DTK 26.10 的 BW1000 镜像已完成两步短训和两次 AWEX
+同步，两步梯度均为 0。两台机器需使用相同镜像和代码版本及路径，并在相同容器内路径下可读地访问模型；`/workspace/runs`
 须挂载到同一个可写共享目录。两台宿主机分别运行前面的 Docker 命令，使用各自的宿主机路径和相同的容器挂载路径。确认每台机器的设备和 CPU
 满足配置，端口可用，并将命令中的尖括号及内容替换为实际值。如果需要调整 Ray 声明的 CPU 数，在各节点启动命令中增加
 `--set "runtime.ray.num_cpus=<实际可用 CPU 数>"`，并确保各角色的资源申请能够调度。
@@ -265,7 +271,9 @@ python3 -m hcu_areal.launch --config examples/configs/gsm8k_deepseek_v4_flash_me
   --set 'training.actor.path=/models/DeepSeek-V4-Flash-4layers'
 ```
 
-公开镜像与上述 Core dev 搭配，在 4+2 卡配置下已完成两步 GRPO 和两次 AWEX 同步。测试中两步梯度均为 0，结果覆盖采样、训练和同步流程。
+公开镜像在 4+2 卡上完成两步 GRPO，DTK 26.10 的 BW1000 镜像在 4+4 卡上也完成两步。每次均完成两次 AWEX 同步，两步梯度均为 0，
+结果覆盖采样、反向传播和权重同步。DTK 26.10 使用 YAML 中按角色配置的显存分配设置，并在启动命令前加 `NCCL_P2P_DISABLE=1`。
+相关设置见[镜像构建指南](../docs/build-docker-image.md#hcu-%E9%AA%8C%E8%AF%81)。
 
 <a id="deepseek-megatron"></a>
 
@@ -275,8 +283,9 @@ python3 -m hcu_areal.launch --config examples/configs/gsm8k_deepseek_v4_flash_me
 `weight_scale_inv`。按[四层模型检查点](../docs/four-layer-checkpoints.md#deepseek-r1)准备四层 FP8
 权重，并按该文档只读挂载四层目录和原始权重目录。
 
-仓库提供单机 4 张 Megatron 训练卡和 4 张 SGLang 推理卡的两步试跑配置。四层 FP8 检查点的生成已验证，四层和完整官方 FP8 检查点的端到端 GRPO
-均待验证。在容器内执行下面的命令。
+仓库提供单机 4 张 Megatron 训练卡和 4 张 SGLang 推理卡的两步试跑配置。四层 FP8 检查点在 DTK 26.10 的 BW1000 和 BW1100
+镜像上均完成两步 GRPO 和两次 AWEX 同步，两种卡型的两步梯度均为非零。完整官方检查点仍待验证。复现实测的环境设置见
+[镜像构建指南](../docs/build-docker-image.md#hcu-%E9%AA%8C%E8%AF%81)。在容器内执行下面的命令。
 
 ```bash
 python3 -m hcu_areal.launch --config examples/configs/gsm8k_deepseek_megatron.yaml \
@@ -290,6 +299,10 @@ python3 -m hcu_areal.launch --config examples/configs/gsm8k_deepseek_megatron.ya
 
 在宿主机按[四层模型检查点](../docs/four-layer-checkpoints.md#glm-5-bf16)准备 GLM-5 四层 BF16
 检查点。原始分片通过符号链接使用时，按该文档同时挂载原始目录。
+
+使用 DTK 26.10 的 BW1000 或 BW1100 镜像时，给训练命令追加
+`--set 'training.sglang.attention_backend=hcu_mla'`。 该后端已通过 BW1000 单机及双机的两步 GRPO，以及
+BW1100 单卡生成验证。显存分配设置见 [镜像构建指南](../docs/build-docker-image.md#hcu-%E9%AA%8C%E8%AF%81)。
 
 ### 单机启动
 
@@ -308,7 +321,8 @@ python3 -m hcu_areal.launch --config examples/configs/gsm8k_glm5_megatron_single
 
 ### 双机启动
 
-双机配置每机 8 卡，使用 8 张 Megatron 训练卡和 8 张 SGLang 推理卡，最多训练 10 步。该配置尚待双机实测。
+双机配置每机 8 卡，使用 8 张 Megatron 训练卡和 8 张 SGLang 推理卡，最多训练 10 步。 BW1000 两步短训完成了两次 AWEX
+同步，两步梯度均为非零。
 
 在两台宿主机上分别运行前面的 Docker 命令。两台机器使用相同的镜像、代码版本和容器内代码路径，模型在两台机器的相同容器内路径下可读；将 `/workspace/runs`
 挂载到两台机器共同访问的可写共享目录。确认两台机器的设备、CPU、内存和网络满足任务需求，Head 节点地址及端口可从 Worker 访问。YAML 为每个 Ray 节点声明

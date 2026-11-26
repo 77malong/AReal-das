@@ -1,0 +1,16 @@
+--- a/sglang/srt/layers/layernorm.py
++++ b/sglang/srt/layers/layernorm.py
+@@ -1204,6 +1204,13 @@
+                         out, x, residual_out, residual, w, self.variance_epsilon
+                     )
+                     return out, residual_out
++            if _is_hcu:
++                # On HCU the vLLM RMSNorm can leave its output buffer unwritten.
++                if _has_rocm_triton_gemma_rms_norm:
++                    return rocm_triton_gemma_rmsnorm(
++                        x, self.weight.data, self.variance_epsilon
++                    )
++                return self.forward_native(x)
+             out = torch.empty_like(x)
+             rms_norm(out, x, w, self.variance_epsilon)
+             return out

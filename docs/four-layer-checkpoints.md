@@ -1,7 +1,7 @@
 # 准备四层模型检查点
 
-本仓库的 GLM-5 和 DeepSeek‑V4‑Flash 示例使用四层检查点。DeepSeek‑R1 也可从官方 FP8 权重准备四层检查点，用于后续验证。脚本保留前四个
-Transformer 层、这些层内的全部专家以及词嵌入、输出头等全局权重，关闭 MTP。四层模型用于训练和权重同步冒烟。
+本仓库的 GLM-5、DeepSeek‑V4‑Flash 和 DeepSeek‑R1 示例使用四层检查点。脚本保留前四个 Transformer
+层、这些层内的全部专家以及词嵌入、输出头等全局权重，关闭 MTP。四层模型用于训练和权重同步冒烟。
 
 在仓库根目录执行下载和切分命令。将尖括号及其中的内容替换为实际路径。已有符合要求的原始检查点时可跳过下载。输出目录必须尚未存在，原始权重以只读方式使用。
 
@@ -78,7 +78,7 @@ python3 scripts/prepare_deepseek_r1_4layers.py \
   "<原始模型目录>" "<四层模型目录>"
 ```
 
-四层 FP8 检查点的生成和张量已验证，端到端 GRPO 待验证。
+四层 FP8 检查点已在 DTK 26.10 的 BW1000 和 BW1100 镜像上分别完成单机 8 卡两步 GRPO。完整官方检查点仍待验证。
 
 ## 挂载并启动
 
@@ -94,4 +94,4 @@ python3 scripts/prepare_deepseek_r1_4layers.py \
 [GLM-5 示例](../examples/README.md#glm5-megatron)和
 [DeepSeek‑V4‑Flash 示例](../examples/README.md#deepseek-v4-flash-megatron)提供启动命令。DeepSeek‑V4‑Flash
 还需要按示例挂载指定版本的 Megatron Core
-dev。[DeepSeek‑R1 示例](../examples/README.md#deepseek-megatron)提供四层 FP8 试跑命令，端到端 GRPO 待验证。
+dev。[DeepSeek‑R1 示例](../examples/README.md#deepseek-megatron)提供四层 FP8 试跑命令。

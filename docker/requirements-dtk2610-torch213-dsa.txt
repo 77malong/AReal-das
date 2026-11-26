@@ -1,0 +1,4 @@
+# SourceFind TileLang for the SGLang HIP DSA indexer.
+tilelang @ https://pypi.sourcefind.cn/das_nightly/dtk2610/+f/6af/8fb0ec05ee92d/tilelang-0.1.15+dtk2610.torch2130.2611170958.g140d50-cp39-abi3-linux_x86_64.whl#sha256=6af8fb0ec05ee92ddb023bf5e206db105864e9b98cc5bfb11f7f1021eefa5d88
+# The runtime pins NumPy 1.26.0.
+ml-dtypes==0.5.4

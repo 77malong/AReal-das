@@ -684,7 +684,7 @@ def apply_training_patches(backend):
         apply_modules("areal.engine.fsdp_engine", _FSDP_AWEX)
     elif backend == "megatron":
         if os.getenv("HCU_AREAL_MCORE_DEV_COMPAT") == "1":
-            megatron_engine.enable_core_dev_compat()
+            megatron_engine.enable_core_dev_training_compat()
         # The engine imports make_mcore_model by value; patch its defining
         # module before importing the engine, not by scanning other modules.
         apply_modules(

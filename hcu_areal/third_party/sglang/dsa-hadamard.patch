@@ -1,0 +1,23 @@
+diff --git a/sglang/srt/layers/attention/dsa/dsa_indexer.py b/sglang/srt/layers/attention/dsa/dsa_indexer.py
+--- a/sglang/srt/layers/attention/dsa/dsa_indexer.py
++++ b/sglang/srt/layers/attention/dsa/dsa_indexer.py
+@@ -53,6 +53,7 @@
+     is_cuda,
+     is_gfx95_supported,
+     is_hcu,
++    is_hcu_native_fp8_supported,
+     is_hip,
+     is_npu,
+     is_xpu,
+@@ -195,5 +196,10 @@
+ def rotate_activation(x: torch.Tensor) -> torch.Tensor:
+-    if _is_hip:
++    if _is_hcu and not is_hcu_native_fp8_supported():
++        # The DTK 26.10 fast Hadamard wheel contains gfx938 code objects.
++        from sglang.kernels.ops.attention.dsa.triton_kernel import (
++            hadamard_transform_optimized as hadamard_transform,
++        )
++    elif _is_hip:
+         from fast_hadamard_transform import hadamard_transform
+     elif _is_xpu:
+         from sgl_kernel import hadamard_transform

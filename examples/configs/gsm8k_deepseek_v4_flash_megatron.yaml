@@ -74,6 +74,9 @@ training:
         HCU_AREAL_OPTIMIZER_CPU_OFFLOAD_FRACTION: '1.0'
         HCU_AREAL_OPTIMIZER_PIN_CPU_GRADS: 'false'
         HCU_AREAL_MEGATRON_AWEX_RELEASE_GRADS: '1'
+        # Avoid fragmenting the large blocks needed during backward.
+        PYTORCH_ALLOC_CONF: expandable_segments:False,max_split_size_mb:4096,garbage_collection_threshold:0.75
+        PYTORCH_CUDA_ALLOC_CONF: expandable_segments:False,max_split_size_mb:4096,garbage_collection_threshold:0.75
     workers_ready_timeout: 1200
     setup_timeout: 3600
     request_timeout: 3600
@@ -109,7 +112,9 @@ training:
       mem: 32
       port_count: 2
       task_type: worker
-      env_vars: {}
+      env_vars:
+        PYTORCH_ALLOC_CONF: expandable_segments:False
+        PYTORCH_CUDA_ALLOC_CONF: expandable_segments:False
   saver:
     freq_epochs: null
   scheduler:

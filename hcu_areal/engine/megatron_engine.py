@@ -29,6 +29,33 @@ def enable_core_dev_compat():
         )
 
 
+def enable_core_dev_training_compat():
+    """Use the HCU Hadamard implementation when the pinned wheel lacks gfx936."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    import torch
+
+    enable_core_dev_compat()
+    if torch.version.hip is None or not torch.cuda.is_available():
+        return
+    arch = torch.cuda.get_device_properties(0).gcnArchName.partition(":")[0]
+    if arch != "gfx936":
+        return
+    try:
+        installed = version("fast-hadamard-transform")
+    except PackageNotFoundError:
+        return
+    if installed != "1.1.0+dtk2610.torch2130.2611120944.g979921":
+        return
+
+    from hcu_megatron.core.transformer.experimental_attention_variant.dsa import (
+        hadamard_transform_optimized,
+    )
+    from megatron.core.transformer.experimental_attention_variant import dsa
+
+    dsa.hadamard_transform = hadamard_transform_optimized
+
+
 def _core_dev_optimizer_factory(original):
     import torch
     from megatron.core import utils

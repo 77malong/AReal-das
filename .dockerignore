@@ -1,0 +1,11 @@
+**
+!Dockerfile
+!requirements.txt
+!docker/
+!docker/requirements-dtk2610-torch213.txt
+!docker/requirements-dtk2610-torch213-dsa.txt
+!hcu_areal/
+!hcu_areal/third_party/
+!hcu_areal/third_party/sglang/
+!hcu_areal/third_party/sglang/dsa-hadamard.patch
+!hcu_areal/third_party/sglang/gemma-rmsnorm.patch
